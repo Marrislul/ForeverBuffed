@@ -11,6 +11,13 @@ local format, ceil, strlower, wipe = string.format, math.ceil, string.lower, wip
 -- value read from the aura API passes through IsSecret first.
 local IsSecret = issecretvalue or function() return false end
 
+-- The value itself, or nil if it is secret. Secret values must not even be
+-- tested for truth ("x and y or z") or compared - that is a Lua error.
+local function Plain(v)
+    if IsSecret(v) then return nil end
+    return v
+end
+
 local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local INV_SLOT = { MainHand = 16, OffHand = 17 }
 local WEAPON_SLOT = { MainHand = 0, OffHand = 1 } -- Enum.WeaponSlot
@@ -226,6 +233,7 @@ function BR:RebuildTrackers()
         if not enabled then return end
 
         local t = NewTracker(def.key, def.kind)
+        t.name = ns.TrackerLabel(def)
         t.slot = def.slot
         t.threshold = (cfg.threshold and cfg.threshold > 0) and cfg.threshold or def.threshold or 0
         if cfg.combatOnly == nil then
@@ -258,6 +266,7 @@ function BR:RebuildTrackers()
         local ids, names = ns.ParseSpellList(c.spells)
         if c.enabled and (#ids > 0 or #names > 0) then
             local t = NewTracker("custom" .. c.uid, "aura")
+            t.name = (c.label and c.label ~= "") and c.label or c.spells
             t.threshold = c.threshold or 0
             t.combatOnly = c.combatOnly
             t.needsSpell = c.needsSpell
@@ -351,6 +360,7 @@ local function ScanAuras()
                 rec.id = id
                 rec.expires = expires or 0
                 rec.duration = duration or 0
+                rec.instance = Plain(aura.auraInstanceID)
             end
         end
     end
@@ -375,11 +385,13 @@ local function ScanAuras()
                 st.duration = best.duration
                 st.lastID = best.id
                 st.lastName = best.name
+                st.instanceID = best.instance
                 if best.id then t.seenIDs[best.id] = true end
                 if best.duration > 0 then durations[best.name] = best.duration end
             elseif hidden == 0 or TrackerReadable(t) then
                 st.present = false
                 st.expires = 0
+                st.instanceID = nil
             end
             -- else: it may be one of the hidden buffs, keep the last known state
         end
@@ -389,22 +401,23 @@ end
 
 local function ReadLiveAura(id)
     local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
-    if not ok or not aura or IsSecret(aura) then return nil end
+    if not ok or IsSecret(aura) or not aura then return nil end
     local expires, duration = aura.expirationTime, aura.duration
     if IsSecret(expires) or IsSecret(duration) then return nil end
-    return expires or 0, duration or 0
+    return expires or 0, duration or 0, Plain(aura.auraInstanceID)
 end
 
 local function LiveFromSet(t, set)
     for id in pairs(set) do
         if AuraReadable(id) then
-            local expires, duration = ReadLiveAura(id)
+            local expires, duration, instance = ReadLiveAura(id)
             if expires then
                 local st = t.state
                 st.present = true
                 st.expires = expires
                 st.duration = duration
                 st.lastID = id
+                st.instanceID = instance
                 return true
             end
         end
@@ -424,7 +437,7 @@ local function LiveCheck(t)
 end
 
 local function OnCastSent(_, target, castGUID)
-    if not castGUID or IsSecret(castGUID) or IsSecret(target) then return end
+    if IsSecret(castGUID) or IsSecret(target) or not castGUID then return end
     if target == nil or target == "" or target == playerName then
         if sentCount > 50 then
             wipe(sentSelf)
@@ -439,13 +452,14 @@ end
 -- (e.g. Battle Shout mid-fight) counts as freshly applied, with the duration
 -- learned out of combat.
 local function OnCastSucceeded(_, castGUID, spellID)
-    if not spellID or IsSecret(spellID) then return end
+    if IsSecret(spellID) or not spellID then return end
     local name = SpellName(spellID)
     if not name then return end
     name = strlower(name)
 
     local onSelf = false
-    if castGUID and not IsSecret(castGUID) then
+    castGUID = Plain(castGUID)
+    if castGUID then
         onSelf = sentSelf[castGUID] or false
         sentSelf[castGUID] = nil
     end
@@ -459,6 +473,7 @@ local function OnCastSucceeded(_, castGUID, spellID)
             st.present = false
             st.expires = 0
             st.lastID = nil
+            st.instanceID = nil
         elseif t.kind == "aura" and t.castNames[name] and (t.selfNames[name] or onSelf) then
             local st = t.state
             local duration = durations[name] or st.duration or t.defaultDuration
@@ -466,9 +481,76 @@ local function OnCastSucceeded(_, castGUID, spellID)
             st.expires = (duration and duration > 0) and (now + duration) or 0
             st.lastName = name
             st.lastID = nil -- unconfirmed until we actually see the buff again
+            st.instanceID = nil -- its new instance ID can't be read in combat
         end
     end
     auraDirty = true
+end
+
+-- A buff the player cancels (right-click on the buff bar, /cancelaura). In
+-- combat the game hides buff data, so the cancel itself is the only hint.
+local function MarkCancelled(t, how)
+    local st = t.state
+    st.present = false
+    st.expires = 0
+    st.lastID = nil
+    st.instanceID = nil
+    if BR.debug then BR:Print(format("cancel (%s) -> %s missing", how, t.name or t.key)) end
+end
+
+-- The cancelled buff's instance ID. It is readable out of combat and in combat
+-- until the buff bar refreshes; after that the game hides which buff it was.
+local function OnCancel(instance, how)
+    instance = Plain(instance)
+    auraDirty = true
+    if not instance then
+        if BR.debug then BR:Print(format("cancel (%s): the game hides which buff it was", how)) end
+        return
+    end
+    for _, t in ipairs(trackers) do
+        if t.kind == "aura" and t.state.present and t.state.instanceID == instance then
+            MarkCancelled(t, how)
+            return
+        end
+    end
+    if BR.debug then BR:Print(format("cancel (%s): not a tracked buff", how)) end
+end
+
+-- "/cancelaura Battle Shout" or "Battle Shout(Rank 3)"
+local function OnCancelName(name)
+    if type(name) ~= "string" or IsSecret(name) then return end
+    name = strlower((name:gsub("%s*%(.-%)%s*$", "")))
+    for _, t in ipairs(trackers) do
+        if t.kind == "aura" and t.state.present and t.buffNames[name] then MarkCancelled(t, "/cancelaura") end
+    end
+    auraDirty = true
+end
+
+function BR:HookCancels()
+    -- Blizzard's buff bar announces every click before it cancels the buff.
+    if EventRegistry and EventRegistry.RegisterCallback then
+        EventRegistry:RegisterCallback("BuffButton.OnClick", function(_, button, mouseButton)
+            if mouseButton ~= "RightButton" or type(button) ~= "table" or button.auraType ~= "Buff" then return end
+            local info = button.buttonInfo
+            OnCancel(type(info) == "table" and Plain(info.auraInstanceID) or nil, "buff bar")
+        end, self)
+    end
+    if C_UnitAuras.CancelAuraByInstanceID then
+        hooksecurefunc(C_UnitAuras, "CancelAuraByInstanceID", function(unit, instance)
+            if IsSecret(unit) or unit ~= "player" then return end
+            OnCancel(instance, "aura button")
+        end)
+    end
+    -- "/cancelaura 465" (by spell ID)
+    if C_Spell.CancelSpellByID then
+        hooksecurefunc(C_Spell, "CancelSpellByID", function(spellID)
+            if IsSecret(spellID) or type(spellID) ~= "number" then return end
+            OnCancelName(SpellName(spellID))
+        end)
+    end
+    if CancelSpellByName then
+        hooksecurefunc("CancelSpellByName", OnCancelName)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -500,10 +582,25 @@ local function PositionIcon(f, i, p)
     end
 end
 
+-- While unlocked, every icon (not just the anchor under the first one) drags the whole bar.
+local function StartDrag()
+    if not BR.db.profile.locked then container:StartMoving() end
+end
+
+local function StopDrag()
+    container:StopMovingOrSizing()
+    local point, _, relativePoint, x, y = container:GetPoint()
+    local p = BR.db.profile
+    p.point, p.relativePoint, p.x, p.y = point, relativePoint, x, y
+end
+
 local function CreateIcon(i)
     local p = BR.db.profile
     local f = CreateFrame("Frame", nil, container)
-    f:EnableMouse(false)
+    f:EnableMouse(not p.locked) -- locked icons must not swallow clicks
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", StartDrag)
+    f:SetScript("OnDragStop", StopDrag)
 
     f.bg = f:CreateTexture(nil, "BACKGROUND")
     f.bg:SetColorTexture(0, 0, 0, 1)
@@ -708,12 +805,16 @@ function BR:ApplyLayout()
     for i, f in ipairs(icons) do
         PositionIcon(f, i, p)
         f.text:SetFont(STANDARD_TEXT_FONT, p.fontSize, "OUTLINE")
+        f:EnableMouse(not p.locked)
     end
     if p.locked then
+        container:SetFrameStrata("MEDIUM")
         container:EnableMouse(false)
         container:SetBackdrop(nil)
         container.label:Hide()
     else
+        -- above the options window, so the bar can be dragged while it is open
+        container:SetFrameStrata("TOOLTIP")
         container:EnableMouse(true)
         container:SetBackdrop(BACKDROP)
         container:SetBackdropColor(0.1, 0.1, 0.8, 0.6)
@@ -734,13 +835,10 @@ function BR:CreateFrames()
     container:SetMovable(true)
     container:SetClampedToScreen(true)
     container:RegisterForDrag("LeftButton")
-    container:SetScript("OnDragStart", function(f) f:StartMoving() end)
-    container:SetScript("OnDragStop", function(f)
-        f:StopMovingOrSizing()
-        local point, _, relativePoint, x, y = f:GetPoint()
-        local p = BR.db.profile
-        p.point, p.relativePoint, p.x, p.y = point, relativePoint, x, y
-    end)
+    -- the position lives in the profile, not in the client's layout cache
+    if container.SetDontSavePosition then container:SetDontSavePosition(true) end
+    container:SetScript("OnDragStart", StartDrag)
+    container:SetScript("OnDragStop", StopDrag)
 
     container.label = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     container.label:SetPoint("BOTTOMLEFT", container, "TOPLEFT", 0, 4)
@@ -780,6 +878,7 @@ local function ClearAuraStates()
         if t.kind == "aura" then
             t.state.present = false
             t.state.expires = 0
+            t.state.instanceID = nil
         end
     end
 end
@@ -871,10 +970,13 @@ function BR:SlashCommand(input)
     elseif cmd == "test" then
         self.testMode = not self.testMode
         self:Print("Test mode " .. (self.testMode and "on" or "off"))
+    elseif cmd == "debug" then
+        self.debug = not self.debug
+        self:Print("Debug output " .. (self.debug and "on" or "off"))
     elseif cmd == "buffs" then
         self:PrintBuffs()
     elseif cmd == "help" then
-        self:Print("/br - options, /br lock, /br unlock, /br test, /br buffs (list your buffs with spell IDs)")
+        self:Print("/br - options, /br lock, /br unlock, /br test, /br buffs (list your buffs with spell IDs), /br debug")
     else
         LibStub("AceConfigDialog-3.0"):Open("BuffReminder")
     end
@@ -916,6 +1018,7 @@ function BR:OnEnable()
     Register("UNIT_AURA", "player")
     Register("UNIT_SPELLCAST_SENT", "player")
     Register("UNIT_SPELLCAST_SUCCEEDED", "player")
+    self:HookCancels()
 
     self:RebuildTrackers()
     self:ApplyLayout()

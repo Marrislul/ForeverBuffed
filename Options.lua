@@ -148,7 +148,9 @@ local options = {
                         .. "- buff timers keep running, so a buff that runs out mid-fight is reported\n"
                         .. "- buffs you cast on yourself (e.g. Battle Shout) are picked up immediately\n"
                         .. "- weapon enchants (stones, oils, poisons, imbues) are always tracked live\n"
-                        .. "- buffs that others cast on you, or that get dispelled, show up once combat ends",
+                        .. "- buffs that others cast on you, or that get dispelled, show up once combat ends\n"
+                        .. "- a buff you right-click away in combat is only noticed until your buffs first change in that fight. "
+                        .. "A /cancelaura macro (e.g. /cancelaura Devotion Aura) is always recognised",
                 },
             },
         },
