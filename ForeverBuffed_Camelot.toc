@@ -1,13 +1,13 @@
 ## Interface: 16001
-## Title: Buff Reminder
+## Title: Forever Buffed
 ## Notes: Shows an icon when one of your buffs or weapon enchants is missing or about to run out - also in combat.
 ## Author: Marris
 ## Version: @project-version@
-## IconTexture: Interface\AddOns\BuffReminder\Media\icon
-## SavedVariables: BuffReminderDB
+## IconTexture: Interface\AddOns\ForeverBuffed\Media\icon
+## SavedVariables: ForeverBuffedDB
 ## OptionalDeps: Ace3
 
 embeds.xml
 Data.lua
-BuffReminder.lua
+ForeverBuffed.lua
 Options.lua

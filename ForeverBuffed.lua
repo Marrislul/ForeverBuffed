@@ -1,7 +1,7 @@
 local _, ns = ...
 
-local BR = LibStub("AceAddon-3.0"):NewAddon("BuffReminder", "AceConsole-3.0")
-ns.BR = BR
+local FB = LibStub("AceAddon-3.0"):NewAddon("ForeverBuffed", "AceConsole-3.0")
+ns.FB = FB
 
 local GetTime, pairs, ipairs, type, tonumber = GetTime, pairs, ipairs, type, tonumber
 local format, ceil, strlower, wipe = string.format, math.ceil, string.lower, wipe
@@ -170,7 +170,7 @@ function ns.TrackerLabel(def)
     return names[1] and table.concat(names, " / ") or def.key
 end
 
-function BR:RebuildTrackers()
+function FB:RebuildTrackers()
     wipe(trackers)
     local p = self.db.profile
     local _, class = UnitClass("player")
@@ -238,7 +238,7 @@ function BR:RebuildTrackers()
 end
 
 -- Which cast spells (and ranks) the player knows. Runs on SPELLS_CHANGED.
-function BR:RefreshSpells()
+function FB:RefreshSpells()
     for _, t in ipairs(trackers) do
         t.castSpell = nil
         wipe(t.knownCasts)
@@ -300,7 +300,7 @@ local function ScanAuras()
         end
     end
 
-    local durations = BR.db.char.durations
+    local durations = FB.db.char.durations
     for _, t in ipairs(trackers) do
         if t.kind == "aura" then
             local best
@@ -362,7 +362,7 @@ local function OnCastSucceeded(_, castGUID, spellID)
     end
 
     local now = GetTime()
-    local durations = BR.db.char.durations
+    local durations = FB.db.char.durations
     for _, t in ipairs(trackers) do
         local st = t.state
         if t.kind == "aura" and t.consumeNames[name] then
@@ -414,7 +414,7 @@ local function OnCancelName(name)
     auraDirty = true
 end
 
-function BR:HookCancels()
+function FB:HookCancels()
     EventRegistry:RegisterCallback("BuffButton.OnClick", OnBuffButtonClick, self)
     hooksecurefunc("CancelSpellByName", OnCancelName)
     hooksecurefunc(C_Spell, "CancelSpellByID", function(spellID)
@@ -453,18 +453,18 @@ end
 
 -- While unlocked, every icon (not just the anchor under the first one) drags the whole bar.
 local function StartDrag()
-    if not BR.db.profile.locked then container:StartMoving() end
+    if not FB.db.profile.locked then container:StartMoving() end
 end
 
 local function StopDrag()
     container:StopMovingOrSizing()
     local point, _, relativePoint, x, y = container:GetPoint()
-    local p = BR.db.profile
+    local p = FB.db.profile
     p.point, p.relativePoint, p.x, p.y = point, relativePoint, x, y
 end
 
 local function CreateIcon(i)
-    local p = BR.db.profile
+    local p = FB.db.profile
     local f = CreateFrame("Frame", nil, container)
     f:EnableMouse(not p.locked) -- locked icons must not swallow clicks
     f:RegisterForDrag("LeftButton")
@@ -613,7 +613,7 @@ local function Evaluate(t, now, p)
     return nil
 end
 
-function BR:Update()
+function FB:Update()
     local p = self.db.profile
     if auraDirty and ScanAuras() then
         auraDirty = false
@@ -656,7 +656,7 @@ function BR:Update()
     end
 end
 
-function BR:ApplyLayout()
+function FB:ApplyLayout()
     local p = self.db.profile
     container:ClearAllPoints()
     container:SetPoint(p.point, UIParent, p.relativePoint, p.x, p.y)
@@ -682,14 +682,14 @@ function BR:ApplyLayout()
     end
 end
 
-function BR:ResetPosition()
+function FB:ResetPosition()
     local p = self.db.profile
     p.point, p.relativePoint, p.x, p.y = "CENTER", "CENTER", 0, -150
     self:ApplyLayout()
 end
 
-function BR:CreateFrames()
-    container = CreateFrame("Frame", "BuffReminderAnchor", UIParent, "BackdropTemplate")
+function FB:CreateFrames()
+    container = CreateFrame("Frame", "ForeverBuffedAnchor", UIParent, "BackdropTemplate")
     container:SetFrameStrata("MEDIUM")
     container:SetMovable(true)
     container:SetClampedToScreen(true)
@@ -701,7 +701,7 @@ function BR:CreateFrames()
 
     container.label = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     container.label:SetPoint("BOTTOMLEFT", container, "TOPLEFT", 0, 4)
-    container.label:SetText("Buff Reminder - drag to move")
+    container.label:SetText("Forever Buffed - drag to move")
 
     local driver = CreateFrame("Frame")
     local elapsedTotal = 0
@@ -709,7 +709,7 @@ function BR:CreateFrames()
         elapsedTotal = elapsedTotal + elapsed
         if elapsedTotal < UPDATE_INTERVAL then return end
         elapsedTotal = 0
-        BR:Update()
+        FB:Update()
     end)
 end
 
@@ -751,9 +751,9 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
         auraDirty = true
     elseif event == "SPELLS_CHANGED" then
-        BR:RefreshSpells()
+        FB:RefreshSpells()
     elseif event == "PLAYER_ENTERING_WORLD" then
-        BR:RebuildTrackers()
+        FB:RebuildTrackers()
     else -- PLAYER_ALIVE, PLAYER_UNGHOST
         auraDirty = true
     end
@@ -763,7 +763,7 @@ end)
 -- Slash command
 -------------------------------------------------------------------------------
 
-function BR:PrintBuffs()
+function FB:PrintBuffs()
     if AurasRestricted() then
         self:Print("The game hides buff data during combat. Try again afterwards.")
         return
@@ -794,13 +794,13 @@ function BR:PrintBuffs()
     end
 end
 
-function BR:SetLocked(locked)
+function FB:SetLocked(locked)
     self.db.profile.locked = locked
     self:ApplyLayout()
-    LibStub("AceConfigRegistry-3.0"):NotifyChange("BuffReminder")
+    LibStub("AceConfigRegistry-3.0"):NotifyChange("ForeverBuffed")
 end
 
-function BR:SlashCommand(input)
+function FB:SlashCommand(input)
     local cmd = strlower(strtrim(input or ""))
     if cmd == "lock" then
         self:SetLocked(true)
@@ -809,9 +809,9 @@ function BR:SlashCommand(input)
     elseif cmd == "buffs" then
         self:PrintBuffs()
     elseif cmd == "help" then
-        self:Print("/br - options, /br lock, /br unlock, /br buffs (list your buffs with spell IDs)")
+        self:Print("/fb - options, /fb lock, /fb unlock, /fb buffs (list your buffs with spell IDs)")
     else
-        LibStub("AceConfigDialog-3.0"):Open("BuffReminder")
+        LibStub("AceConfigDialog-3.0"):Open("ForeverBuffed")
     end
 end
 
@@ -819,25 +819,25 @@ end
 -- Lifecycle
 -------------------------------------------------------------------------------
 
-function BR:OnProfileChanged()
+function FB:OnProfileChanged()
     self:RebuildTrackers()
     self:RebuildOptions()
     self:ApplyLayout()
 end
 
-function BR:OnInitialize()
-    self.db = LibStub("AceDB-3.0"):New("BuffReminderDB", defaults, true)
+function FB:OnInitialize()
+    self.db = LibStub("AceDB-3.0"):New("ForeverBuffedDB", defaults, true)
     self.db.RegisterCallback(self, "OnProfileChanged", "OnProfileChanged")
     self.db.RegisterCallback(self, "OnProfileCopied", "OnProfileChanged")
     self.db.RegisterCallback(self, "OnProfileReset", "OnProfileChanged")
 
     self:CreateFrames()
     self:SetupOptions()
-    self:RegisterChatCommand("br", "SlashCommand")
-    self:RegisterChatCommand("buffreminder", "SlashCommand")
+    self:RegisterChatCommand("fb", "SlashCommand")
+    self:RegisterChatCommand("foreverbuffed", "SlashCommand")
 end
 
-function BR:OnEnable()
+function FB:OnEnable()
     playerName = UnitName("player")
 
     for _, event in ipairs({

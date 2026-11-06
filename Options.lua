@@ -1,14 +1,14 @@
 local _, ns = ...
-local BR = ns.BR
+local FB = ns.FB
 
 local AceConfig = LibStub("AceConfig-3.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
 local AceConfigRegistry = LibStub("AceConfigRegistry-3.0")
 
-local function P() return BR.db.profile end
+local function P() return FB.db.profile end
 
-local function Rebuild() BR:RebuildTrackers() end
-local function Layout() BR:ApplyLayout() end
+local function Rebuild() FB:RebuildTrackers() end
+local function Layout() FB:ApplyLayout() end
 
 -- Simple profile setting: get/set by key, with an optional apply step.
 local function Setting(key, apply)
@@ -62,7 +62,7 @@ local function WithThreshold(base)
 end
 
 local options = {
-    name = "Buff Reminder",
+    name = "Forever Buffed",
     type = "group",
     childGroups = "tab",
     args = {
@@ -77,13 +77,13 @@ local options = {
                     desc = "Unlock to drag the icons into place. While unlocked, all enabled reminders are shown as a preview.",
                     order = 1,
                     get = function() return P().locked end,
-                    set = function(_, v) BR:SetLocked(v) end,
+                    set = function(_, v) FB:SetLocked(v) end,
                 },
                 resetPosition = {
                     type = "execute",
                     name = "Reset position",
                     order = 3,
-                    func = function() BR:ResetPosition() end,
+                    func = function() FB:ResetPosition() end,
                 },
                 layoutHeader = { type = "header", name = "Layout", order = 10 },
                 iconSize = {
@@ -136,7 +136,7 @@ local options = {
                 combatHeader = { type = "header", name = "Combat", order = 40 },
                 combatInfo = {
                     type = "description", order = 41, fontSize = "medium",
-                    name = "WoW Forever hides buff data from addons during combat. Buff Reminder keeps working with what it knew right before the fight:\n"
+                    name = "WoW Forever hides buff data from addons during combat. Forever Buffed keeps working with what it knew right before the fight:\n"
                         .. "- buff timers keep running, so a buff that runs out mid-fight is reported\n"
                         .. "- buffs you cast on yourself (e.g. Battle Shout) are picked up immediately\n"
                         .. "- weapon enchants (stones, oils, poisons, imbues) are always tracked live\n"
@@ -244,13 +244,13 @@ local function BuildCustomArgs()
             order = 1,
             width = "full",
             get = function() return "" end,
-            set = function(_, v) BR:AddCustom(v) end,
+            set = function(_, v) FB:AddCustom(v) end,
         },
         help = {
             type = "description",
             order = 2,
             fontSize = "medium",
-            name = "Tip: type |cffffd200/br buffs|r to list all your current buffs with their spell IDs. IDs from wowhead.com/classic work as well. Names work too (e.g. \"Well Fed\"), but must match the buff name in your game language.\n",
+            name = "Tip: type |cffffd200/fb buffs|r to list all your current buffs with their spell IDs. IDs from wowhead.com/classic work as well. Names work too (e.g. \"Well Fed\"), but must match the buff name in your game language.\n",
         },
     }
     for i, c in ipairs(P().custom) do
@@ -319,7 +319,7 @@ local function BuildCustomArgs()
                     type = "execute", name = "Delete", order = 7,
                     confirm = true,
                     confirmText = "Delete this reminder?",
-                    func = function() BR:RemoveCustom(c) end,
+                    func = function() FB:RemoveCustom(c) end,
                 },
             },
         }
@@ -327,7 +327,7 @@ local function BuildCustomArgs()
     return args
 end
 
-function BR:AddCustom(text)
+function FB:AddCustom(text)
     local ids, names = ns.ParseSpellList(text)
     if #ids == 0 and #names == 0 then return end
     local p = P()
@@ -345,7 +345,7 @@ function BR:AddCustom(text)
     self:RebuildOptions()
 end
 
-function BR:RemoveCustom(entry)
+function FB:RemoveCustom(entry)
     local list = P().custom
     for i = #list, 1, -1 do
         if list[i] == entry then table.remove(list, i) end
@@ -354,16 +354,16 @@ function BR:RemoveCustom(entry)
     self:RebuildOptions()
 end
 
-function BR:RebuildOptions()
+function FB:RebuildOptions()
     options.args.trackers.args = BuildTrackerArgs()
     options.args.custom.args = BuildCustomArgs()
-    AceConfigRegistry:NotifyChange("BuffReminder")
+    AceConfigRegistry:NotifyChange("ForeverBuffed")
 end
 
-function BR:SetupOptions()
+function FB:SetupOptions()
     options.args.profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db)
     options.args.profiles.order = 100
     self:RebuildOptions()
-    AceConfig:RegisterOptionsTable("BuffReminder", options)
-    self.optionsFrame = AceConfigDialog:AddToBlizOptions("BuffReminder", "Buff Reminder")
+    AceConfig:RegisterOptionsTable("ForeverBuffed", options)
+    self.optionsFrame = AceConfigDialog:AddToBlizOptions("ForeverBuffed", "Forever Buffed")
 end

@@ -1,4 +1,4 @@
-**Buff Reminder** puts an icon on your screen when one of your buffs is missing or about to run out. No raid checklists, no huge config. Just the icon, where you want it.
+**Forever Buffed** puts an icon on your screen when one of your buffs is missing or about to run out. No raid checklists, no huge config. Just the icon, where you want it.
 
 I made this for WoW Forever because WeakAuras isn't available there, and I really missed my old Battle Shout reminder. The other reminder addons I tried check your buffs before the pull and then go blind once combat starts. Shout in the middle of a fight and they never notice. This one does.
 
@@ -19,11 +19,11 @@ You only get reminded about spells you actually know, so a fresh level 1 priest 
 
 ### Add your own
 
-Any buff can be added by spell ID or by name: flasks, elixirs, food, the Mark of the Wild your druid keeps forgetting. Type `/br buffs` and it lists everything you have on right now with the IDs, so you don't have to dig through Wowhead.
+Any buff can be added by spell ID or by name: flasks, elixirs, food, the Mark of the Wild your druid keeps forgetting. Type `/fb buffs` and it lists everything you have on right now with the IDs, so you don't have to dig through Wowhead.
 
 ### What happens in combat
 
-Forever hides buff data from addons while you're fighting. Buff Reminder works around that as far as it can:
+Forever hides buff data from addons while you're fighting. Forever Buffed works around that as far as it can:
 
 - timers keep counting down, so a buff that runs out mid-fight still pops up
 - buffs you put on yourself (Battle Shout, seals, Inner Fire...) are picked up right away
@@ -34,7 +34,7 @@ What it can't see: buffs somebody else puts on you during a fight, or buffs that
 
 ### Settings
 
-`/br` opens the options. `/br unlock` lets you drag the icons around, `/br lock` when you're done.
+`/fb` opens the options. `/fb unlock` lets you drag the icons around, `/fb lock` when you're done.
 
 You can change the icon size and direction, set the warning time (for everything or per buff), show reminders only in or out of combat, hide them while resting or mounted, and pick what happens when you're out of mana or rage: show the icon, grey it out, or hide it.
 
