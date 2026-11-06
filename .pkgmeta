@@ -1,2 +1,5 @@
 package-as: BuffReminder
 manual-changelog: CHANGELOG.txt
+
+ignore:
+  - Promo

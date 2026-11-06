@@ -79,14 +79,6 @@ local options = {
                     get = function() return P().locked end,
                     set = function(_, v) BR:SetLocked(v) end,
                 },
-                test = {
-                    type = "toggle",
-                    name = "Test mode",
-                    desc = "Show all enabled reminders as a preview, even while locked.",
-                    order = 2,
-                    get = function() return BR.testMode end,
-                    set = function(_, v) BR.testMode = v end,
-                },
                 resetPosition = {
                     type = "execute",
                     name = "Reset position",

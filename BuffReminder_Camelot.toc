@@ -3,7 +3,7 @@
 ## Notes: Shows an icon when one of your buffs or weapon enchants is missing or about to run out - also in combat.
 ## Author: Marris
 ## Version: @project-version@
-## IconTexture: Interface\Icons\Ability_Warrior_BattleShout
+## IconTexture: Interface\AddOns\BuffReminder\Media\icon
 ## SavedVariables: BuffReminderDB
 ## OptionalDeps: Ace3
 

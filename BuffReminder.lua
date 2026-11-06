@@ -3,16 +3,15 @@ local _, ns = ...
 local BR = LibStub("AceAddon-3.0"):NewAddon("BuffReminder", "AceConsole-3.0")
 ns.BR = BR
 
-local GetTime, pairs, ipairs, type, tonumber, pcall = GetTime, pairs, ipairs, type, tonumber, pcall
+local GetTime, pairs, ipairs, type, tonumber = GetTime, pairs, ipairs, type, tonumber
 local format, ceil, strlower, wipe = string.format, math.ceil, string.lower, wipe
 
--- WoW Forever runs the Midnight "secret values" system: in combat, buff data
--- reaches addons as secret values that cannot be compared or tested. Every
--- value read from the aura API passes through IsSecret first.
-local IsSecret = issecretvalue or function() return false end
+-- WoW Forever runs the "secret values" system: in combat the game hands buff
+-- data to addons as secret values. Those must not be compared or even tested
+-- for truth ("x and y or z"), that is a Lua error. Everything read from the
+-- aura API goes through IsSecret/Plain first.
+local IsSecret = issecretvalue
 
--- The value itself, or nil if it is secret. Secret values must not even be
--- tested for truth ("x and y or z") or compared - that is a Lua error.
 local function Plain(v)
     if IsSecret(v) then return nil end
     return v
@@ -20,10 +19,6 @@ end
 
 local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local INV_SLOT = { MainHand = 16, OffHand = 17 }
-local WEAPON_SLOT = { MainHand = 0, OffHand = 1 } -- Enum.WeaponSlot
-local WEAPON_CLASS = Enum.ItemClass and Enum.ItemClass.Weapon or 2
-local PERMANENT_ENCHANT = Enum.ItemEnchantType and Enum.ItemEnchantType.Permanent
-local RESTRICTION_ACTIVATING = Enum.AddOnRestrictionState and Enum.AddOnRestrictionState.Activating or 1
 local UPDATE_INTERVAL = 0.1
 local RED_TEXT_BELOW = 5
 
@@ -50,17 +45,16 @@ local defaults = {
         nextCustomID = 1,
     },
     char = {
-        durations = {}, -- lowercase buff name -> last seen full duration
+        durations = {}, -- lowercase buff name -> full duration seen out of combat
     },
 }
 
-local trackers = {}      -- enabled trackers, in display order
-local states = {}        -- tracker key -> { present, expires, duration, lastID, lastName }
-local auraDirty = true   -- buffs changed since the last successful scan
-local sentSelf = {}      -- castGUID -> true while a cast aimed at the player is in flight
+local trackers = {}    -- enabled trackers, in display order
+local states = {}      -- tracker key -> { present, expires, duration, lastName, instanceID }
+local auraDirty = true -- buffs changed since the last successful scan
+local sentSelf = {}    -- castGUID -> true while a cast aimed at the player is in flight
 local sentCount = 0
-local readableCache = {} -- spellID -> buff stays readable while auras are secret
-local scan = {}          -- reused scan records
+local scan = {}        -- reused scan records
 local icons = {}
 local container, playerName
 
@@ -68,9 +62,7 @@ local container, playerName
 -- Helpers
 -------------------------------------------------------------------------------
 
-local function SpellName(id)
-    return C_Spell.GetSpellName(id)
-end
+local SpellName = C_Spell.GetSpellName
 
 local function AddName(set, name)
     if name and name ~= "" then set[strlower(name)] = true end
@@ -94,70 +86,29 @@ local function FormatTime(seconds)
     if seconds >= 60 then return format("%dm", ceil(seconds / 60)) end
     return format("%d", ceil(seconds))
 end
-ns.FormatTime = FormatTime
 
--- The spell ID to use if the player knows this spell (current rank), else nil.
-local function KnownSpell(id)
-    local known = C_SpellBook.IsSpellKnown(id) or (IsPlayerSpell and IsPlayerSpell(id))
-    local name = SpellName(id)
-    -- A name lookup returns the current override, i.e. the highest rank.
+-- Spell ID (current rank) if the player knows the spell, else nil. Takes an ID or a name.
+local function KnownSpell(spell)
+    local name = type(spell) == "number" and SpellName(spell) or spell
+    -- a lookup by name returns the current override, i.e. the highest rank
     local info = name and C_Spell.GetSpellInfo(name)
-    local rankID = info and info.spellID
-    if rankID and rankID ~= id and C_SpellBook.IsSpellKnown(rankID) then return rankID end
-    if known then return id end
+    if info and C_SpellBook.IsSpellKnown(info.spellID) then return info.spellID end
+    if type(spell) == "number" and C_SpellBook.IsSpellKnown(spell) then return spell end
 end
 
-local function KnownSpellByName(name)
-    local info = C_Spell.GetSpellInfo(name)
-    if info and info.spellID and C_SpellBook.IsSpellKnown(info.spellID) then return info.spellID end
-end
-
--- True while the game hides buff data from addons (combat and similar).
+-- True while the game hides buff data from addons (combat).
 local function AurasRestricted()
-    if not (C_Secrets and C_Secrets.ShouldAurasBeSecret) then return false end
-    local ok, restricted = pcall(C_Secrets.ShouldAurasBeSecret)
-    if not ok or IsSecret(restricted) then return true end
-    return restricted and true or false
-end
-ns.AurasRestricted = AurasRestricted
-
--- Some spells are flagged "never secret"; those stay readable in combat.
-local function AuraReadable(id)
-    local readable = readableCache[id]
-    if readable == nil then
-        readable = false
-        if C_Secrets and C_Secrets.ShouldSpellAuraBeSecret then
-            local ok, secret = pcall(C_Secrets.ShouldSpellAuraBeSecret, id)
-            readable = ok and not IsSecret(secret) and secret == false
-        end
-        readableCache[id] = readable
-    end
-    return readable
+    return C_Secrets.ShouldAurasBeSecret()
 end
 
--- Temporary enchant on a weapon slot: hasEnchant, secondsLeft. nil = unreadable.
+-- Temporary enchant on a weapon slot: hasEnchant, secondsLeft. Not secret in combat.
 local function ReadWeaponEnchant(slot)
-    if C_Item and C_Item.GetWeaponEnchantInfo then
-        local slotID = (Enum.WeaponSlot and Enum.WeaponSlot[slot]) or WEAPON_SLOT[slot]
-        local ok, enchants = pcall(C_Item.GetWeaponEnchantInfo, slotID)
-        if not ok or IsSecret(enchants) or type(enchants) ~= "table" then return nil end
-        for _, e in pairs(enchants) do
-            local has, kind, left = e.hasEnchant, e.enchantType, e.timeLeft
-            if IsSecret(has) or IsSecret(kind) or IsSecret(left) then return nil end
-            if has and kind ~= PERMANENT_ENCHANT then return true, (left or 0) / 1000 end
+    for _, e in pairs(C_Item.GetWeaponEnchantInfo(Enum.WeaponSlot[slot])) do
+        if e.hasEnchant and e.enchantType ~= Enum.ItemEnchantType.Permanent then
+            return true, e.timeLeft / 1000
         end
-        return false, 0
-    elseif GetWeaponEnchantInfo then
-        local hasMain, mainMs, _, _, hasOff, offMs = GetWeaponEnchantInfo()
-        if slot == "MainHand" then return hasMain and true or false, (mainMs or 0) / 1000 end
-        return hasOff and true or false, (offMs or 0) / 1000
     end
-end
-ns.ReadWeaponEnchant = ReadWeaponEnchant
-
-local function GetItemClassID(itemID)
-    local getInfo = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
-    return getInfo and select(6, getInfo(itemID))
+    return false, 0
 end
 
 -- Off-hand counts only for weapons, not shields or held-in-off-hand items.
@@ -165,7 +116,7 @@ local function SlotHasWeapon(slot)
     local itemID = GetInventoryItemID("player", INV_SLOT[slot])
     if not itemID then return false end
     if slot == "MainHand" then return true end
-    return GetItemClassID(itemID) == WEAPON_CLASS
+    return select(6, C_Item.GetItemInfoInstant(itemID)) == Enum.ItemClass.Weapon
 end
 
 -------------------------------------------------------------------------------
@@ -183,10 +134,8 @@ end
 
 local function IsSelfCast(selfCast, id)
     if selfCast == true then return true end
-    if type(selfCast) == "table" then
-        for _, v in ipairs(selfCast) do
-            if v == id then return true end
-        end
+    for _, v in ipairs(selfCast or {}) do
+        if v == id then return true end
     end
     return false
 end
@@ -195,14 +144,14 @@ local function NewTracker(key, kind)
     return {
         key = key,
         kind = kind or "aura",
-        buffIDs = {},    -- set of buff spell IDs
-        buffNames = {},  -- set of lowercase buff names
-        seenIDs = {},    -- buff IDs actually seen on the player (all ranks)
+        buffIDs = {},      -- set of buff spell IDs
+        buffNames = {},    -- set of lowercase buff names
+        seenIDs = {},      -- buff IDs actually seen on the player (all ranks)
         castIDs = {},
-        castNames = {},  -- lowercase names of spells that apply the buff
-        selfNames = {},  -- subset of castNames that always land on the player
+        castNames = {},    -- lowercase names of spells that apply the buff
+        selfNames = {},    -- subset of castNames that always land on the player
         consumeNames = {}, -- lowercase names of own casts that remove the buff
-        knownCasts = {}, -- lowercase name -> known spell ID
+        knownCasts = {},   -- lowercase name -> known spell ID
         state = GetState(key),
     }
 end
@@ -233,19 +182,18 @@ function BR:RebuildTrackers()
         if not enabled then return end
 
         local t = NewTracker(def.key, def.kind)
-        t.name = ns.TrackerLabel(def)
         t.slot = def.slot
-        t.threshold = (cfg.threshold and cfg.threshold > 0) and cfg.threshold or def.threshold or 0
+        t.threshold = cfg.threshold > 0 and cfg.threshold or def.threshold or 0
         if cfg.combatOnly == nil then
             t.combatOnly = def.combatOnly
         else
             t.combatOnly = cfg.combatOnly
         end
-        for _, id in ipairs(def.consumedBy or {}) do AddName(t.consumeNames, SpellName(id)) end
         t.defaultDuration = def.duration
         t.needsSpell = def.needsSpell ~= false
         t.noUsable = def.noUsable
         t.castIDs = def.cast or {}
+        for _, id in ipairs(def.consumedBy or {}) do AddName(t.consumeNames, SpellName(id)) end
         for _, id in ipairs(def.buffs or {}) do
             t.buffIDs[id] = true
             t.firstID = t.firstID or id
@@ -266,7 +214,6 @@ function BR:RebuildTrackers()
         local ids, names = ns.ParseSpellList(c.spells)
         if c.enabled and (#ids > 0 or #names > 0) then
             local t = NewTracker("custom" .. c.uid, "aura")
-            t.name = (c.label and c.label ~= "") and c.label or c.spells
             t.threshold = c.threshold or 0
             t.combatOnly = c.combatOnly
             t.needsSpell = c.needsSpell
@@ -275,9 +222,8 @@ function BR:RebuildTrackers()
             for _, id in ipairs(ids) do
                 t.buffIDs[id] = true
                 t.firstID = t.firstID or id
-                local n = SpellName(id)
-                AddName(t.buffNames, n)
-                AddName(t.castNames, n)
+                AddName(t.buffNames, SpellName(id))
+                AddName(t.castNames, SpellName(id))
             end
             for _, n in ipairs(names) do
                 AddName(t.buffNames, n)
@@ -296,23 +242,16 @@ function BR:RefreshSpells()
     for _, t in ipairs(trackers) do
         t.castSpell = nil
         wipe(t.knownCasts)
-        for _, id in ipairs(t.castIDs) do
-            local known = KnownSpell(id)
+        local function check(spell)
+            local known = KnownSpell(spell)
             if known then
                 t.castSpell = t.castSpell or known
-                local n = SpellName(id)
-                if n then t.knownCasts[strlower(n)] = known end
+                local n = type(spell) == "number" and SpellName(spell) or spell
+                t.knownCasts[strlower(n)] = known
             end
         end
-        if t.literalNames then
-            for _, n in ipairs(t.literalNames) do
-                local known = KnownSpellByName(n)
-                if known then
-                    t.castSpell = t.castSpell or known
-                    t.knownCasts[strlower(n)] = known
-                end
-            end
-        end
+        for _, id in ipairs(t.castIDs) do check(id) end
+        for _, n in ipairs(t.literalNames or {}) do check(n) end
     end
 end
 
@@ -320,14 +259,13 @@ end
 -- Buff state
 -------------------------------------------------------------------------------
 
--- Whether every buff of a tracker is readable, so "not found" means "not there".
+-- Whether no buff of a tracker can be hidden by the game, so "not found" means "not there".
 local function TrackerReadable(t)
-    if not t.firstID or t.literalNames and t.literalNames[1] then return false end
-    for id in pairs(t.buffIDs) do
-        if not AuraReadable(id) then return false end
-    end
-    for id in pairs(t.seenIDs) do
-        if not AuraReadable(id) then return false end
+    if not t.firstID or (t.literalNames and t.literalNames[1]) then return false end
+    for _, set in ipairs({ t.buffIDs, t.seenIDs }) do
+        for id in pairs(set) do
+            if C_Secrets.ShouldSpellAuraBeSecret(id) then return false end
+        end
     end
     return true
 end
@@ -351,15 +289,12 @@ local function ScanAuras()
                 hidden = hidden + 1
             else
                 n = n + 1
-                local rec = scan[n]
-                if not rec then
-                    rec = {}
-                    scan[n] = rec
-                end
-                rec.name = name and strlower(name) or ""
+                local rec = scan[n] or {}
+                scan[n] = rec
+                rec.name = strlower(name)
                 rec.id = id
-                rec.expires = expires or 0
-                rec.duration = duration or 0
+                rec.expires = expires
+                rec.duration = duration
                 rec.instance = Plain(aura.auraInstanceID)
             end
         end
@@ -383,10 +318,9 @@ local function ScanAuras()
                 st.present = true
                 st.expires = best.expires
                 st.duration = best.duration
-                st.lastID = best.id
                 st.lastName = best.name
                 st.instanceID = best.instance
-                if best.id then t.seenIDs[best.id] = true end
+                t.seenIDs[best.id] = true
                 if best.duration > 0 then durations[best.name] = best.duration end
             elseif hidden == 0 or TrackerReadable(t) then
                 st.present = false
@@ -399,46 +333,9 @@ local function ScanAuras()
     return true
 end
 
-local function ReadLiveAura(id)
-    local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
-    if not ok or IsSecret(aura) or not aura then return nil end
-    local expires, duration = aura.expirationTime, aura.duration
-    if IsSecret(expires) or IsSecret(duration) then return nil end
-    return expires or 0, duration or 0, Plain(aura.auraInstanceID)
-end
-
-local function LiveFromSet(t, set)
-    for id in pairs(set) do
-        if AuraReadable(id) then
-            local expires, duration, instance = ReadLiveAura(id)
-            if expires then
-                local st = t.state
-                st.present = true
-                st.expires = expires
-                st.duration = duration
-                st.lastID = id
-                st.instanceID = instance
-                return true
-            end
-        end
-    end
-    return false
-end
-
--- While buff data is secret: read the spells Blizzard keeps readable.
-local function LiveCheck(t)
-    if LiveFromSet(t, t.buffIDs) or LiveFromSet(t, t.seenIDs) then return end
-    local st = t.state
-    -- The exact buff we last saw is readable and gone: it really dropped.
-    if st.present and st.lastID and AuraReadable(st.lastID) then
-        st.present = false
-        st.expires = 0
-    end
-end
-
 local function OnCastSent(_, target, castGUID)
     if IsSecret(castGUID) or IsSecret(target) or not castGUID then return end
-    if target == nil or target == "" or target == playerName then
+    if target == "" or target == playerName then
         if sentCount > 50 then
             wipe(sentSelf)
             sentCount = 0
@@ -448,11 +345,11 @@ local function OnCastSent(_, target, castGUID)
     end
 end
 
--- The player's own cast stays readable in combat. A buff cast on yourself
+-- The player's own casts stay readable in combat. A buff cast on yourself
 -- (e.g. Battle Shout mid-fight) counts as freshly applied, with the duration
 -- learned out of combat.
 local function OnCastSucceeded(_, castGUID, spellID)
-    if IsSecret(spellID) or not spellID then return end
+    if IsSecret(spellID) then return end
     local name = SpellName(spellID)
     if not name then return end
     name = strlower(name)
@@ -467,90 +364,62 @@ local function OnCastSucceeded(_, castGUID, spellID)
     local now = GetTime()
     local durations = BR.db.char.durations
     for _, t in ipairs(trackers) do
+        local st = t.state
         if t.kind == "aura" and t.consumeNames[name] then
             -- e.g. Judgement uses up the seal
-            local st = t.state
             st.present = false
             st.expires = 0
-            st.lastID = nil
             st.instanceID = nil
         elseif t.kind == "aura" and t.castNames[name] and (t.selfNames[name] or onSelf) then
-            local st = t.state
             local duration = durations[name] or st.duration or t.defaultDuration
             st.present = true
             st.expires = (duration and duration > 0) and (now + duration) or 0
             st.lastName = name
-            st.lastID = nil -- unconfirmed until we actually see the buff again
-            st.instanceID = nil -- its new instance ID can't be read in combat
+            st.instanceID = nil -- the new instance ID can't be read in combat
         end
     end
     auraDirty = true
 end
 
--- A buff the player cancels (right-click on the buff bar, /cancelaura). In
--- combat the game hides buff data, so the cancel itself is the only hint.
-local function MarkCancelled(t, how)
-    local st = t.state
-    st.present = false
-    st.expires = 0
-    st.lastID = nil
-    st.instanceID = nil
-    if BR.debug then BR:Print(format("cancel (%s) -> %s missing", how, t.name or t.key)) end
+local function MarkCancelled(t)
+    t.state.present = false
+    t.state.expires = 0
+    t.state.instanceID = nil
 end
 
--- The cancelled buff's instance ID. It is readable out of combat and in combat
--- until the buff bar refreshes; after that the game hides which buff it was.
-local function OnCancel(instance, how)
-    instance = Plain(instance)
+-- Right-click on Blizzard's buff bar. The buff's instance ID is readable out of
+-- combat, and in combat until the buff bar first refreshes; after that the
+-- game hides which buff was clicked (then use /cancelaura).
+local function OnBuffButtonClick(_, button, mouseButton)
+    if mouseButton ~= "RightButton" or type(button) ~= "table" or button.auraType ~= "Buff" then return end
     auraDirty = true
-    if not instance then
-        if BR.debug then BR:Print(format("cancel (%s): the game hides which buff it was", how)) end
-        return
-    end
+    local info = button.buttonInfo
+    local instance = type(info) == "table" and Plain(info.auraInstanceID) or nil
+    if not instance then return end
     for _, t in ipairs(trackers) do
         if t.kind == "aura" and t.state.present and t.state.instanceID == instance then
-            MarkCancelled(t, how)
+            MarkCancelled(t)
             return
         end
     end
-    if BR.debug then BR:Print(format("cancel (%s): not a tracked buff", how)) end
 end
 
--- "/cancelaura Battle Shout" or "Battle Shout(Rank 3)"
+-- "/cancelaura Battle Shout", "Battle Shout(Rank 3)" or a spell ID: always readable.
 local function OnCancelName(name)
-    if type(name) ~= "string" or IsSecret(name) then return end
+    if IsSecret(name) or type(name) ~= "string" then return end
     name = strlower((name:gsub("%s*%(.-%)%s*$", "")))
     for _, t in ipairs(trackers) do
-        if t.kind == "aura" and t.state.present and t.buffNames[name] then MarkCancelled(t, "/cancelaura") end
+        if t.kind == "aura" and t.buffNames[name] then MarkCancelled(t) end
     end
     auraDirty = true
 end
 
 function BR:HookCancels()
-    -- Blizzard's buff bar announces every click before it cancels the buff.
-    if EventRegistry and EventRegistry.RegisterCallback then
-        EventRegistry:RegisterCallback("BuffButton.OnClick", function(_, button, mouseButton)
-            if mouseButton ~= "RightButton" or type(button) ~= "table" or button.auraType ~= "Buff" then return end
-            local info = button.buttonInfo
-            OnCancel(type(info) == "table" and Plain(info.auraInstanceID) or nil, "buff bar")
-        end, self)
-    end
-    if C_UnitAuras.CancelAuraByInstanceID then
-        hooksecurefunc(C_UnitAuras, "CancelAuraByInstanceID", function(unit, instance)
-            if IsSecret(unit) or unit ~= "player" then return end
-            OnCancel(instance, "aura button")
-        end)
-    end
-    -- "/cancelaura 465" (by spell ID)
-    if C_Spell.CancelSpellByID then
-        hooksecurefunc(C_Spell, "CancelSpellByID", function(spellID)
-            if IsSecret(spellID) or type(spellID) ~= "number" then return end
-            OnCancelName(SpellName(spellID))
-        end)
-    end
-    if CancelSpellByName then
-        hooksecurefunc("CancelSpellByName", OnCancelName)
-    end
+    EventRegistry:RegisterCallback("BuffButton.OnClick", OnBuffButtonClick, self)
+    hooksecurefunc("CancelSpellByName", OnCancelName)
+    hooksecurefunc(C_Spell, "CancelSpellByID", function(spellID)
+        if not IsSecret(spellID) then OnCancelName(SpellName(spellID)) end
+    end)
 end
 
 -------------------------------------------------------------------------------
@@ -648,27 +517,21 @@ local function CreateIcon(i)
     return f
 end
 
+-- Icon texture and the spell to cast for a tracker (the variant you used last, if known).
 local function TrackerIcon(t)
-    local st = t.state
-    local spell = (st.lastName and t.knownCasts[st.lastName]) or t.castSpell
+    local spell = (t.state.lastName and t.knownCasts[t.state.lastName]) or t.castSpell
     local texture = spell and C_Spell.GetSpellTexture(spell)
     if texture then return texture, spell end
     if t.kind == "weapon" then
         return GetInventoryItemTexture("player", INV_SLOT[t.slot]) or QUESTION_MARK
     end
-    if t.firstID then
-        texture = C_Spell.GetSpellTexture(t.firstID)
-    elseif t.literalNames and t.literalNames[1] then
-        texture = C_Spell.GetSpellTexture(t.literalNames[1])
-    end
-    return texture or QUESTION_MARK
+    local first = t.firstID or (t.literalNames and t.literalNames[1])
+    return first and C_Spell.GetSpellTexture(first) or QUESTION_MARK
 end
 
 local function IsCastable(t, spell)
     if t.noUsable or not spell then return true end
-    local ok, usable = pcall(C_Spell.IsSpellUsable, spell)
-    if not ok or IsSecret(usable) then return true end
-    return usable and true or false
+    return C_Spell.IsSpellUsable(spell)
 end
 
 local function ShowIcon(i, t, status, remaining, p)
@@ -684,7 +547,7 @@ local function ShowIcon(i, t, status, remaining, p)
     local shade = desaturate and 0.6 or 1
     f.tex:SetVertexColor(shade, shade, shade)
 
-    if p.showTimer and status == "expiring" and remaining then
+    if p.showTimer and status == "expiring" then
         f.text:SetText(FormatTime(remaining))
         if remaining < RED_TEXT_BELOW then
             f.text:SetTextColor(1, 0.15, 0.15)
@@ -715,7 +578,6 @@ end
 
 local function GloballyHidden(p, inCombat)
     if UnitIsDeadOrGhost("player") or UnitOnTaxi("player") then return true end
-    if UnitHasVehicleUI and UnitHasVehicleUI("player") then return true end
     if p.showWhen == "combat" and not inCombat then return true end
     if p.showWhen == "nocombat" and inCombat then return true end
     if p.hideResting and not inCombat and IsResting() then return true end
@@ -724,19 +586,15 @@ local function GloballyHidden(p, inCombat)
 end
 
 -- Status of one tracker: nil (all good), "missing" or "expiring" (+ seconds left).
-local function Evaluate(t, now, restricted, p)
+local function Evaluate(t, now, p)
     if t.needsSpell and not t.castSpell then return nil end
     local st = t.state
 
     if t.kind == "weapon" then
         if not SlotHasWeapon(t.slot) then return nil end
         local has, left = ReadWeaponEnchant(t.slot)
-        if has ~= nil then
-            st.present = has
-            st.expires = (has and left > 0) and (now + left) or 0
-        end
-    elseif restricted then
-        LiveCheck(t)
+        st.present = has
+        st.expires = (has and left > 0) and (now + left) or 0
     end
 
     local remaining
@@ -750,23 +608,20 @@ local function Evaluate(t, now, restricted, p)
     end
     if not st.present then return "missing" end
 
-    local threshold = (t.threshold and t.threshold > 0) and t.threshold or p.threshold
+    local threshold = t.threshold > 0 and t.threshold or p.threshold
     if remaining and remaining <= threshold then return "expiring", remaining end
     return nil
 end
 
 function BR:Update()
     local p = self.db.profile
-    local now = GetTime()
-    local restricted = AurasRestricted()
-    if auraDirty and not restricted and ScanAuras() then
+    if auraDirty and ScanAuras() then
         auraDirty = false
     end
 
-    local preview = self.testMode or not p.locked
-    local inCombat = InCombatLockdown()
     local n = 0
-    if preview then
+    if not p.locked then
+        -- preview while placing the bar
         for i, t in ipairs(trackers) do
             if not (t.needsSpell and not t.castSpell) then
                 n = n + 1
@@ -777,17 +632,21 @@ function BR:Update()
                 end
             end
         end
-    elseif not GloballyHidden(p, inCombat) then
-        for _, t in ipairs(trackers) do
-            local status, remaining
-            if inCombat or not t.combatOnly then
-                status, remaining = Evaluate(t, now, restricted, p)
-            end
-            if status then
-                local _, spell = TrackerIcon(t)
-                if p.unusable ~= "hide" or IsCastable(t, spell) then
-                    n = n + 1
-                    ShowIcon(n, t, status, remaining, p)
+    else
+        local inCombat = InCombatLockdown()
+        if not GloballyHidden(p, inCombat) then
+            local now = GetTime()
+            for _, t in ipairs(trackers) do
+                local status, remaining
+                if inCombat or not t.combatOnly then
+                    status, remaining = Evaluate(t, now, p)
+                end
+                if status then
+                    local _, spell = TrackerIcon(t)
+                    if p.unusable ~= "hide" or IsCastable(t, spell) then
+                        n = n + 1
+                        ShowIcon(n, t, status, remaining, p)
+                    end
                 end
             end
         end
@@ -836,7 +695,7 @@ function BR:CreateFrames()
     container:SetClampedToScreen(true)
     container:RegisterForDrag("LeftButton")
     -- the position lives in the profile, not in the client's layout cache
-    if container.SetDontSavePosition then container:SetDontSavePosition(true) end
+    container:SetDontSavePosition(true)
     container:SetScript("OnDragStart", StartDrag)
     container:SetScript("OnDragStop", StopDrag)
 
@@ -860,27 +719,8 @@ end
 
 local eventFrame = CreateFrame("Frame")
 
-local function Register(event, unit)
-    if C_EventUtils and C_EventUtils.IsEventValid and not C_EventUtils.IsEventValid(event) then return end
-    if unit then
-        eventFrame:RegisterUnitEvent(event, unit)
-    else
-        eventFrame:RegisterEvent(event)
-    end
-end
-
 local function TryScanNow()
     if auraDirty and ScanAuras() then auraDirty = false end
-end
-
-local function ClearAuraStates()
-    for _, t in ipairs(trackers) do
-        if t.kind == "aura" then
-            t.state.present = false
-            t.state.expires = 0
-            t.state.instanceID = nil
-        end
-    end
 end
 
 -- Unit events are registered for "player" only, so their (possibly secret)
@@ -893,35 +733,34 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         OnCastSucceeded(...)
     elseif event == "PLAYER_REGEN_DISABLED" then
-        wipe(readableCache)
         TryScanNow() -- last chance before the buff data turns secret
-    elseif event == "PLAYER_REGEN_ENABLED" then
-        wipe(readableCache)
-        wipe(sentSelf)
-        sentCount = 0
-        auraDirty = true
     elseif event == "ADDON_RESTRICTION_STATE_CHANGED" then
-        wipe(readableCache)
         local _, state = ...
-        if not IsSecret(state) and state == RESTRICTION_ACTIVATING then
-            TryScanNow()
+        if not IsSecret(state) and state == Enum.AddOnRestrictionState.Activating then
+            TryScanNow() -- still readable while this event is dispatched
         else
             auraDirty = true
         end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        wipe(sentSelf)
+        sentCount = 0
+        auraDirty = true
     elseif event == "PLAYER_DEAD" then
-        ClearAuraStates()
+        for _, t in ipairs(trackers) do
+            if t.kind == "aura" then MarkCancelled(t) end
+        end
         auraDirty = true
     elseif event == "SPELLS_CHANGED" then
         BR:RefreshSpells()
     elseif event == "PLAYER_ENTERING_WORLD" then
         BR:RebuildTrackers()
-    else
+    else -- PLAYER_ALIVE, PLAYER_UNGHOST
         auraDirty = true
     end
 end)
 
 -------------------------------------------------------------------------------
--- Slash command helpers
+-- Slash command
 -------------------------------------------------------------------------------
 
 function BR:PrintBuffs()
@@ -939,7 +778,7 @@ function BR:PrintBuffs()
         elseif not aura then
             break
         else
-            self:Print(format("   %s - |cffffd200%d|r", aura.name or "?", aura.spellId or 0))
+            self:Print(format("   %s - |cffffd200%d|r", aura.name, aura.spellId))
         end
     end
     if hidden > 0 then
@@ -949,7 +788,7 @@ function BR:PrintBuffs()
         local has, left = ReadWeaponEnchant(slot)
         if has then
             local where = slot == "MainHand" and "Main hand" or "Off hand"
-            local timeText = left and left > 0 and (FormatTime(left) .. " left") or "no time limit"
+            local timeText = left > 0 and (FormatTime(left) .. " left") or "no time limit"
             self:Print(format("   %s: temporary weapon enchant (%s)", where, timeText))
         end
     end
@@ -967,16 +806,10 @@ function BR:SlashCommand(input)
         self:SetLocked(true)
     elseif cmd == "unlock" then
         self:SetLocked(false)
-    elseif cmd == "test" then
-        self.testMode = not self.testMode
-        self:Print("Test mode " .. (self.testMode and "on" or "off"))
-    elseif cmd == "debug" then
-        self.debug = not self.debug
-        self:Print("Debug output " .. (self.debug and "on" or "off"))
     elseif cmd == "buffs" then
         self:PrintBuffs()
     elseif cmd == "help" then
-        self:Print("/br - options, /br lock, /br unlock, /br test, /br buffs (list your buffs with spell IDs), /br debug")
+        self:Print("/br - options, /br lock, /br unlock, /br buffs (list your buffs with spell IDs)")
     else
         LibStub("AceConfigDialog-3.0"):Open("BuffReminder")
     end
@@ -1007,17 +840,15 @@ end
 function BR:OnEnable()
     playerName = UnitName("player")
 
-    Register("PLAYER_ENTERING_WORLD")
-    Register("SPELLS_CHANGED")
-    Register("PLAYER_REGEN_DISABLED")
-    Register("PLAYER_REGEN_ENABLED")
-    Register("ADDON_RESTRICTION_STATE_CHANGED")
-    Register("PLAYER_DEAD")
-    Register("PLAYER_ALIVE")
-    Register("PLAYER_UNGHOST")
-    Register("UNIT_AURA", "player")
-    Register("UNIT_SPELLCAST_SENT", "player")
-    Register("UNIT_SPELLCAST_SUCCEEDED", "player")
+    for _, event in ipairs({
+        "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
+        "ADDON_RESTRICTION_STATE_CHANGED", "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
+    }) do
+        eventFrame:RegisterEvent(event)
+    end
+    for _, event in ipairs({ "UNIT_AURA", "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_SUCCEEDED" }) do
+        eventFrame:RegisterUnitEvent(event, "player")
+    end
     self:HookCancels()
 
     self:RebuildTrackers()
