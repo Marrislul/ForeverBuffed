@@ -1,0 +1,2 @@
+1.0.0:
+- initial release for WoW Forever (1.60.1)

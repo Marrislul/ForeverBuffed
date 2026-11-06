@@ -1,0 +1,13 @@
+## Interface: 16001
+## Title: Buff Reminder
+## Notes: Shows an icon when one of your buffs or weapon enchants is missing or about to run out - also in combat.
+## Author: Marris
+## Version: @project-version@
+## IconTexture: Interface\Icons\Ability_Warrior_BattleShout
+## SavedVariables: BuffReminderDB
+## OptionalDeps: Ace3
+
+embeds.xml
+Data.lua
+BuffReminder.lua
+Options.lua
