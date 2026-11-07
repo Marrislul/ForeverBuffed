@@ -51,12 +51,19 @@ local defaults = {
 local trackers = {}    -- enabled trackers, in display order
 local states = {}      -- tracker key -> { present, expires, duration, lastName, instanceID }
 local auraDirty = true -- buffs changed since the last successful scan
-local sentSelf = {}    -- castGUID -> true while a cast aimed at the player is in flight
+local sentAt = {}      -- castGUID -> GetTime() of a cast you started, until it lands
+local sentSelf = {}    -- castGUID -> true if that cast is aimed at you
 local sentCount = 0
 local scan = {}        -- reused scan records
 local icons = {}
 local shownCount = -1  -- number of shown icons the layout is for; -1 = outdated
 local container, mover, playerName
+local debugMode = false -- /fb debug: explain in chat what the addon sees
+local combatScanNoted = false
+
+local function Debug(text, ...)
+    if debugMode then FB:Print("|cff999999debug:|r " .. format(text, ...)) end
+end
 
 -------------------------------------------------------------------------------
 -- Helpers
@@ -283,6 +290,7 @@ end
 -- Which cast spells (and ranks) the player knows. Runs on SPELLS_CHANGED.
 function FB:RefreshSpells()
     for _, t in ipairs(trackers) do
+        local had = t.castSpell
         t.castSpell = nil
         wipe(t.knownCasts)
         local function check(spell)
@@ -295,6 +303,9 @@ function FB:RefreshSpells()
         end
         for _, id in ipairs(t.castIDs) do check(id) end
         for _, n in ipairs(t.literalNames or {}) do check(n) end
+        if had and not t.castSpell and t.kind ~= "tracking" then
+            Debug("spells: %s switched off, no known spell found", t.key)
+        end
     end
     self:RefreshTracking()
 end
@@ -405,6 +416,10 @@ local function ScanAuras()
             if not best and t.exclusive then best = FindHiddenAura(t.exclusive) end
             local st = t.state
             if best then
+                if not st.present or st.lastName ~= best.name or math.abs(st.expires - best.expires) > 1 then
+                    Debug("scan: %s = %s (%d), %s", t.key, best.name, best.id,
+                        best.expires > 0 and format("%ds left", best.expires - GetTime()) or "no time limit")
+                end
                 st.present = true
                 st.expires = best.expires
                 st.duration = best.duration
@@ -413,6 +428,10 @@ local function ScanAuras()
                 t.seenIDs[best.id] = true
                 if best.duration > 0 then durations[best.name] = best.duration end
             elseif hidden == 0 or TrackerReadable(t) then
+                if st.present then
+                    Debug("scan: %s not found (%d hidden buffs, %s)", t.key, hidden,
+                        InCombatLockdown() and "in combat" or "out of combat")
+                end
                 st.present = false
                 st.expires = 0
                 st.instanceID = nil
@@ -420,49 +439,79 @@ local function ScanAuras()
             -- else: it may be one of the hidden buffs, keep the last known state
         end
     end
-    return true
+    return true, n, hidden
 end
 
-local function OnCastSent(_, target, castGUID)
-    if IsSecret(castGUID) or IsSecret(target) or not castGUID then return end
-    if target == "" or target == playerName then
-        if sentCount > 50 then
-            wipe(sentSelf)
-            sentCount = 0
+-- Every cast you start yourself (button, macro, item) is announced here before it
+-- happens. Spells the game triggers on its own, like procs, never are.
+local function OnCastSent(_, target, castGUID, spellID)
+    if IsSecret(castGUID) or not castGUID then return end
+    local now = GetTime()
+    if sentCount > 50 then
+        -- forget casts that never landed (failed, interrupted)
+        sentCount = 0
+        for guid, at in pairs(sentAt) do
+            if now - at > 30 then
+                sentAt[guid], sentSelf[guid] = nil, nil
+            else
+                sentCount = sentCount + 1
+            end
         end
-        sentSelf[castGUID] = true
-        sentCount = sentCount + 1
     end
+    sentAt[castGUID] = now
+    sentSelf[castGUID] = (not IsSecret(target) and (target == "" or target == playerName)) or nil
+    sentCount = sentCount + 1
+    if debugMode and not IsSecret(spellID) then Debug("sent: %s", SpellName(spellID) or spellID) end
 end
 
 -- The player's own casts stay readable in combat. A buff cast on yourself
 -- (e.g. Battle Shout mid-fight) counts as freshly applied, with the duration
 -- learned out of combat.
 local function OnCastSucceeded(_, castGUID, spellID)
-    if IsSecret(spellID) then return end
+    if IsSecret(spellID) then
+        Debug("cast: the game hides which spell it was")
+        return
+    end
     local name = SpellName(spellID)
     if not name then return end
     name = strlower(name)
 
-    local onSelf = false
+    -- Only casts you started count. Seal of Command's extra damage, for example, lands
+    -- as a cast named "Seal of Command" and would restart the seal's timer on every hit.
+    local started, onSelf = true, false
     castGUID = Plain(castGUID)
     if castGUID then
+        started = sentAt[castGUID] ~= nil
         onSelf = sentSelf[castGUID] or false
-        sentSelf[castGUID] = nil
+        if started then
+            sentAt[castGUID], sentSelf[castGUID] = nil, nil
+            sentCount = sentCount - 1
+        end
+    else
+        -- can't be matched up; a spell from your spellbook is your own cast
+        started = C_SpellBook.IsSpellKnown(spellID)
     end
 
     local now = GetTime()
     local durations = FB.db.char.durations
+    local matched = false
     for _, t in ipairs(trackers) do
         local st = t.state
         if t.kind == "aura" and t.castNames[name] and (t.selfNames[name] or onSelf) then
-            local duration = durations[name] or st.duration or t.defaultDuration
-            st.present = true
-            st.expires = (duration and duration > 0) and (now + duration) or 0
-            st.lastName = name
-            st.instanceID = nil -- the new instance ID can't be read in combat
+            matched = true
+            if started then
+                local duration = durations[name] or st.duration or t.defaultDuration
+                st.present = true
+                st.expires = (duration and duration > 0) and (now + duration) or 0
+                st.lastName = name
+                st.instanceID = nil -- the new instance ID can't be read in combat
+                Debug("cast: %s -> %s, %ds", name, t.key, duration or 0)
+            else
+                Debug("cast: %s, triggered by the game, ignored", name)
+            end
         end
     end
+    if not matched then Debug("cast: %s", name) end
     auraDirty = true
 end
 
@@ -736,6 +785,7 @@ local function Evaluate(t, now, p)
     if st.present and st.expires > 0 then
         remaining = st.expires - now
         if remaining <= 0 then
+            Debug("timer: %s ran out", t.key)
             st.present = false
             st.expires = 0
             remaining = nil
@@ -750,8 +800,15 @@ end
 
 function FB:Update()
     local p = self.db.profile
-    if auraDirty and ScanAuras() then
-        auraDirty = false
+    if auraDirty then
+        local ok, found, hidden = ScanAuras()
+        if ok then
+            auraDirty = false
+            if debugMode and InCombatLockdown() and not combatScanNoted then
+                combatScanNoted = true
+                Debug("buff data readable in combat (%d buffs, %d hidden)", found, hidden)
+            end
+        end
     end
 
     local n = 0
@@ -878,8 +935,7 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
             auraDirty = true
         end
     elseif event == "PLAYER_REGEN_ENABLED" then
-        wipe(sentSelf)
-        sentCount = 0
+        combatScanNoted = false
         auraDirty = true
     elseif event == "PLAYER_DEAD" then
         for _, t in ipairs(trackers) do
@@ -916,7 +972,9 @@ function FB:PrintBuffs()
         elseif not aura then
             break
         else
-            self:Print(format("   %s - |cffffd200%d|r", aura.name, aura.spellId))
+            local expires = Plain(aura.expirationTime)
+            local left = (expires and expires > 0) and (", " .. FormatTime(expires - GetTime())) or ""
+            self:Print(format("   %s - |cffffd200%d|r%s", aura.name, aura.spellId, left))
         end
     end
     if hidden > 0 then
@@ -946,8 +1004,11 @@ function FB:SlashCommand(input)
         self:SetLocked(false)
     elseif cmd == "buffs" then
         self:PrintBuffs()
+    elseif cmd == "debug" then
+        debugMode = not debugMode
+        self:Print(debugMode and "Debug output on, /fb debug turns it off." or "Debug output off.")
     elseif cmd == "help" then
-        self:Print("/fb - options, /fb lock, /fb unlock, /fb buffs (list your buffs with spell IDs)")
+        self:Print("/fb - options, /fb lock, /fb unlock, /fb buffs (list your buffs with spell IDs), /fb debug")
     else
         LibStub("AceConfigDialog-3.0"):Open("ForeverBuffed")
     end

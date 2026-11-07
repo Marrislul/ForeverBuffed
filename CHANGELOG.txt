@@ -1,7 +1,8 @@
-0.0.3
+0.0.4
 
 FIXES
-- Paladin: Judgement no longer makes the seal reminder pop up. On Forever, Judgement doesn't use up your seal, it stays active.
-- Buffs that don't stack now count both ways, also for your own reminders. Track an Intellect elixir and a mage's Arcane Intellect replaces it? The elixir reminder now counts Arcane Intellect as buffed instead of nagging.
-  Groups: Intellect (Arcane Intellect / Brilliance, Boosted Intellect, Scrolls of Intellect, Intellect elixirs), Stamina (Fortitude, Boosted Stamina, Scrolls of Stamina), Spirit (Divine Spirit, Boosted Spirit, Scrolls of Spirit), Mark of the Wild (Boosted Stats from the Enchanted Lute).
-  Your own reminders get the "Non-stacking buffs count" switch too.
+- Paladin: Seal of Command's extra damage no longer restarts the seal timer. After a few hits the seal reminder could stay away in combat even though the seal had run out. Only casts you start yourself count now, procs that share a buff's name are ignored.
+
+NEW
+- /fb buffs also shows how long each buff has left.
+- /fb debug explains in chat what the addon sees (casts, buff checks). Handy if you want to report a bug.
