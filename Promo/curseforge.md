@@ -8,12 +8,12 @@ I made this for WoW Forever because WeakAuras isn't available there, and I reall
 - **Mage:** Arcane Intellect, your armor
 - **Priest:** Fortitude, Inner Fire, Divine Spirit, Touch of Weakness / Shadowguard (Shadow Protection is there too, off by default)
 - **Druid:** Mark of the Wild (Thorns off by default)
-- **Paladin:** a blessing, an aura, and your seal while in combat (Righteous Fury off by default)
-- **Hunter:** an aspect, Trueshot Aura
+- **Paladin:** Your blessing, your aura, and your seal while in combat (Righteous Fury off by default)
+- **Hunter:** Aspects, Trueshot Aura
 - **Warlock:** Demon Armor / Demon Skin
-- **Shaman:** weapon imbue (Lightning Shield off by default)
-- **Rogue:** poisons on both weapons
-- **Everyone:** sharpening stones, weightstones and oils, the Camp Benefits buff from a campfire, and minimap tracking (Find Herbs, Find Minerals, Sense Undead, hunter tracks... any of them counts, since only one can be on). Off by default, turn on what you use.
+- **Shaman:** Weapon imbue (Lightning Shield off by default)
+- **Rogue:** Poisons on both weapons
+- **Everyone:** Sharpening stones, weightstones and oils, the Camp Benefits buff from a campfire, and minimap tracking (Find Herbs, Find Minerals, Sense Undead, hunter tracks… any of them counts, since only one can be on). Off by default, turn on what you use.
 
 Some buffs don't stack with a class buff: camp object buffs, scrolls and Intellect elixirs. Those count both ways: with Boosted Intellect from an Incense Candle you won't be told to cast Arcane Intellect, and a reminder for your Intellect elixir is happy when a mage's Arcane Intellect replaced it. You can turn that off per reminder.
 
@@ -28,7 +28,7 @@ Any buff can be added by spell ID or by name: flasks, elixirs, food, the Mark of
 Forever hides buff data from addons while you're fighting. Forever Buffed works around that as far as it can:
 
 - timers keep counting down, so a buff that runs out mid-fight still pops up
-- buffs you put on yourself (Battle Shout, seals, Inner Fire...) are picked up right away
+- buffs you put on yourself (Battle Shout, seals, Inner Fire…) are picked up right away
 - weapon enchants are always tracked live
 
 What it can't see: buffs somebody else puts on you during a fight, buffs that get dispelled, or Lightning Shield running out of charges. Those fix themselves as soon as combat ends. Right-clicking a buff away mid-fight usually isn't noticed either. If you need that, use a `/cancelaura` macro, that one always works.
