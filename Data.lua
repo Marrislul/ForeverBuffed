@@ -5,8 +5,12 @@ local _, ns = ...
 -- rank and the versions other players cast on you count as well.
 --
 --   key         saved-variable key, never change it
---   kind        "aura" (buff on you, default) or "weapon" (temporary weapon enchant)
+--   kind        "aura" (buff on you, default), "weapon" (temporary weapon enchant) or
+--               "tracking" (any minimap tracking spell, e.g. Find Herbs)
 --   buffs       spell IDs whose buff satisfies the tracker
+--   exclusive   spell IDs of buffs that don't stack with it and count as buffed too
+--               (can be turned off per reminder). Matched by ID only, since several share
+--               a name, and also found when the game hides them from the buff bar
 --   cast        spells that apply it. The tracker is only active once you know one
 --               of them; the first known one gives the icon and the "enough mana?" check
 --   selfCast    true, or a list of cast IDs, that always land on you. Lets the addon
@@ -22,22 +26,55 @@ local _, ns = ...
 --   combatOnly  default for "only in combat"
 --   default     enabled in a new profile
 
+-- Buffs that don't stack with a class buff ("exclusive" above):
+-- - Forever camp objects give hidden buffs that the game calls "mutually exclusive" with
+--   one class buff each. Kings, Might and Wisdom have camp counterparts too (1230098,
+--   1230164, 1230587), but the paladin reminder accepts any blessing, so they aren't used.
+-- - Scrolls never stacked with the class buff of the same stat; the stronger one wins.
+-- - Intellect elixirs: reported not to stack with Arcane Intellect. Only the pure Intellect
+--   ones, not Owl, Cunning or Sages.
+-- - Not here: the Blood Shard buffs from Mangletooth (Wisdom of Agamaggan 7764, Rising
+--   Spirit 10767) stack with class buffs.
+local EXCLUSIVE_INTELLECT = {
+    1229513,                      -- Boosted Intellect (camp: Incense Candle)
+    8096, 8097, 8098, 12176,      -- Scroll of Intellect I-IV
+    3166, 11396,                  -- Elixir of Wisdom, Elixir of Greater Intellect
+    1250988, 1250989,             -- Elixir of Lesser Intellect, Elixir of Intellect (Forever)
+}
+local EXCLUSIVE_STAMINA = {
+    1230124,                      -- Boosted Stamina (camp: First Aid Kit)
+    8099, 8100, 8101, 12178,      -- Scroll of Stamina I-IV
+}
+local EXCLUSIVE_SPIRIT = {
+    1229718,                      -- Boosted Spirit (camp: Faction Banner)
+    8112, 8113, 8114, 12177,      -- Scroll of Spirit I-IV
+}
+
 ns.CLASS_TRACKERS = {
     WARRIOR = {
         { key = "battleShout", buffs = { 6673 }, cast = { 6673 }, selfCast = true, duration = 180, default = true },
     },
     MAGE = {
         -- Arcane Intellect / Arcane Brilliance
-        { key = "arcaneIntellect", buffs = { 1459, 23028 }, cast = { 1459, 23028 }, selfCast = { 23028 }, default = true },
+        {
+            key = "arcaneIntellect", buffs = { 1459, 23028 }, cast = { 1459, 23028 }, selfCast = { 23028 }, default = true,
+            exclusive = EXCLUSIVE_INTELLECT,
+        },
         -- Ice Armor, Frost Armor, Mage Armor
         { key = "mageArmor", buffs = { 7302, 168, 6117 }, cast = { 7302, 168, 6117 }, selfCast = true, default = true },
     },
     PRIEST = {
         -- Power Word: Fortitude / Prayer of Fortitude
-        { key = "fortitude", buffs = { 1243, 21562 }, cast = { 1243, 21562 }, selfCast = { 21562 }, default = true },
+        {
+            key = "fortitude", buffs = { 1243, 21562 }, cast = { 1243, 21562 }, selfCast = { 21562 }, default = true,
+            exclusive = EXCLUSIVE_STAMINA,
+        },
         { key = "innerFire", buffs = { 588 }, cast = { 588 }, selfCast = true, duration = 600, default = true },
         -- Divine Spirit / Prayer of Spirit
-        { key = "divineSpirit", buffs = { 14752, 27681 }, cast = { 14752, 27681 }, selfCast = { 27681 }, default = true },
+        {
+            key = "divineSpirit", buffs = { 14752, 27681 }, cast = { 14752, 27681 }, selfCast = { 27681 }, default = true,
+            exclusive = EXCLUSIVE_SPIRIT,
+        },
         -- racial: Touch of Weakness (Undead), Shadowguard (Troll)
         { key = "touchOfWeakness", buffs = { 2652 }, cast = { 2652 }, selfCast = true, duration = 600, default = true },
         { key = "shadowguard", buffs = { 18137 }, cast = { 18137 }, selfCast = true, duration = 600, default = true },
@@ -46,7 +83,10 @@ ns.CLASS_TRACKERS = {
     },
     DRUID = {
         -- Mark of the Wild / Gift of the Wild (Omen of Clarity is passive on Forever)
-        { key = "markOfTheWild", buffs = { 1126, 21849 }, cast = { 1126, 21849 }, selfCast = { 21849 }, default = true },
+        {
+            key = "markOfTheWild", buffs = { 1126, 21849 }, cast = { 1126, 21849 }, selfCast = { 21849 }, default = true,
+            exclusive = { 1230653 }, -- Boosted Stats (camp: Enchanted Lute), not the Fish Bowl one (1230098)
+        },
         { key = "thorns", buffs = { 467 }, cast = { 467 }, default = false },
     },
     PALADIN = {
@@ -117,5 +157,17 @@ ns.GENERAL_TRACKERS = {
         key = "weaponOffHand", kind = "weapon", slot = "OffHand", label = "Weapon buff (off hand)",
         desc = "Any temporary weapon enchant on the off-hand weapon. Shields and off-hand items are ignored.",
         needsSpell = false, default = false,
+    },
+    {
+        -- from sitting at a campfire; the bonuses of the camp objects come with it
+        key = "campBenefits", buffs = { 1229741 }, needsSpell = false, default = false,
+        desc = "Reminds you while you don't have the Camp Benefits buff from sitting at a campfire.",
+    },
+    {
+        -- the tracking spells come from the minimap tracking menu, see FB:RefreshTracking
+        key = "tracking", kind = "tracking", label = "Tracking (any)", noUsable = true, default = false,
+        desc = "Reminds you while no minimap tracking is on: Find Herbs, Find Minerals, Find Treasure, "
+            .. "Sense Undead, Sense Demons, the hunter tracks... Only one can be on at a time, so any of them counts. "
+            .. "Only shown if you know a tracking spell.",
     },
 }

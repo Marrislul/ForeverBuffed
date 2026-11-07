@@ -25,8 +25,7 @@ local RED_TEXT_BELOW = 5
 local defaults = {
     profile = {
         locked = true,
-        point = "CENTER",
-        relativePoint = "CENTER",
+        -- the bar's anchor (see LayoutIcons) relative to the screen center
         x = 0,
         y = -150,
         iconSize = 40,
@@ -35,7 +34,7 @@ local defaults = {
         threshold = 30,
         showTimer = true,
         fontSize = 14,
-        glowMissing = true,
+        glow = "missing", -- "off", "missing" or "both" (missing or running out)
         unusable = "desaturate",
         showWhen = "always",
         hideResting = false,
@@ -56,7 +55,8 @@ local sentSelf = {}    -- castGUID -> true while a cast aimed at the player is i
 local sentCount = 0
 local scan = {}        -- reused scan records
 local icons = {}
-local container, playerName
+local shownCount = -1  -- number of shown icons the layout is for; -1 = outdated
+local container, mover, playerName
 
 -------------------------------------------------------------------------------
 -- Helpers
@@ -183,6 +183,7 @@ function FB:RebuildTrackers()
 
         local t = NewTracker(def.key, def.kind)
         t.slot = def.slot
+        t.glow = cfg.glow
         t.threshold = cfg.threshold > 0 and cfg.threshold or def.threshold or 0
         if cfg.combatOnly == nil then
             t.combatOnly = def.combatOnly
@@ -198,6 +199,11 @@ function FB:RebuildTrackers()
             t.buffIDs[id] = true
             t.firstID = t.firstID or id
             AddName(t.buffNames, SpellName(id))
+        end
+        -- buffs that don't stack with it; by ID only, several share a name ("Boosted Stats")
+        if cfg.exclusive ~= false then
+            t.exclusive = def.exclusive
+            for _, id in ipairs(def.exclusive or {}) do t.buffIDs[id] = true end
         end
         for _, id in ipairs(t.castIDs) do
             local n = SpellName(id)
@@ -215,6 +221,7 @@ function FB:RebuildTrackers()
         if c.enabled and (#ids > 0 or #names > 0) then
             local t = NewTracker("custom" .. c.uid, "aura")
             t.threshold = c.threshold or 0
+            t.glow = c.glow
             t.combatOnly = c.combatOnly
             t.needsSpell = c.needsSpell
             t.castIDs = ids
@@ -253,6 +260,36 @@ function FB:RefreshSpells()
         for _, id in ipairs(t.castIDs) do check(id) end
         for _, n in ipairs(t.literalNames or {}) do check(n) end
     end
+    self:RefreshTracking()
+end
+
+-- Minimap tracking (Find Herbs, Sense Undead, Track Beasts, ...) is no buff; the game
+-- reports it separately. Only one can be on at a time, so any of them counts. The
+-- minimap menu lists the tracking spells you know, which also decides the icon.
+function FB:RefreshTracking()
+    for _, t in ipairs(trackers) do
+        if t.kind == "tracking" then
+            local st = t.state
+            st.present = false
+            st.expires = 0
+            for i = 1, C_Minimap.GetNumTrackingTypes() do
+                local info = C_Minimap.GetTrackingInfo(i)
+                -- spells only, not the town filters (mailbox, flight master, ...)
+                local id = info and Plain(info.spellID)
+                local name = id and SpellName(id) or (info and Plain(info.type) == "spell" and Plain(info.name))
+                if name then
+                    local spell = id or name
+                    name = strlower(name)
+                    t.castSpell = t.castSpell or spell
+                    t.knownCasts[name] = spell
+                    if Plain(info.active) then
+                        st.present = true
+                        st.lastName = name -- icon while it is off
+                    end
+                end
+            end
+        end
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -270,6 +307,29 @@ local function TrackerReadable(t)
     return true
 end
 
+-- Copies a buff into a scan record. False if part of it is secret (a single buff
+-- flagged "always secret").
+local function ReadAura(aura, rec)
+    local name, id, expires, duration = aura.name, aura.spellId, aura.expirationTime, aura.duration
+    if IsSecret(name) or IsSecret(id) or IsSecret(expires) or IsSecret(duration) then return false end
+    rec.name = strlower(name)
+    rec.id = id
+    rec.expires = expires
+    rec.duration = duration
+    rec.instance = Plain(aura.auraInstanceID)
+    return true
+end
+
+-- The camp buffs that block a class buff are hidden auras, missing from the buff
+-- list; ask for them by spell ID.
+local hiddenRec = {}
+local function FindHiddenAura(ids)
+    for _, id in ipairs(ids) do
+        local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
+        if ok and not IsSecret(aura) and aura and ReadAura(aura, hiddenRec) then return hiddenRec end
+    end
+end
+
 -- Reads all player buffs and updates every aura tracker. Only possible while
 -- buff data is not secret; returns false (state untouched) otherwise.
 local function ScanAuras()
@@ -283,19 +343,12 @@ local function ScanAuras()
         elseif not aura then
             break
         else
-            local name, id, expires, duration = aura.name, aura.spellId, aura.expirationTime, aura.duration
-            if IsSecret(name) or IsSecret(id) or IsSecret(expires) or IsSecret(duration) then
-                -- a single buff flagged "always secret"
-                hidden = hidden + 1
-            else
+            local rec = scan[n + 1] or {}
+            scan[n + 1] = rec
+            if ReadAura(aura, rec) then
                 n = n + 1
-                local rec = scan[n] or {}
-                scan[n] = rec
-                rec.name = strlower(name)
-                rec.id = id
-                rec.expires = expires
-                rec.duration = duration
-                rec.instance = Plain(aura.auraInstanceID)
+            else
+                hidden = hidden + 1
             end
         end
     end
@@ -313,6 +366,7 @@ local function ScanAuras()
                     end
                 end
             end
+            if not best and t.exclusive then best = FindHiddenAura(t.exclusive) end
             local st = t.state
             if best then
                 st.present = true
@@ -435,32 +489,78 @@ local BACKDROP = {
     insets = { left = 2, right = 2, top = 2, bottom = 2 },
 }
 
-local function PositionIcon(f, i, p)
-    local size = p.iconSize
-    local offset = (i - 1) * (size + p.spacing)
-    f:SetSize(size, size)
-    f:ClearAllPoints()
-    if p.grow == "LEFT" then
-        f:SetPoint("TOPRIGHT", container, "TOPRIGHT", -offset, 0)
-    elseif p.grow == "UP" then
-        f:SetPoint("BOTTOMLEFT", container, "BOTTOMLEFT", 0, offset)
-    elseif p.grow == "DOWN" then
-        f:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -offset)
-    else
-        f:SetPoint("TOPLEFT", container, "TOPLEFT", offset, 0)
+-- Direction the icons line up in. The centered layouts spread them evenly around the anchor.
+local GROW = {
+    RIGHT = { 1, 0 }, LEFT = { -1, 0 }, UP = { 0, 1 }, DOWN = { 0, -1 },
+    HCENTER = { 1, 0, centered = true }, VCENTER = { 0, -1, centered = true },
+}
+local MOVER_PADDING = 4
+local GLOW_COLOR = { missing = { 1, 0.15, 0.1 }, expiring = { 1, 0.75, 0.1 } }
+
+-- The container is an icon-sized anchor at the saved position: the first icon sits on it,
+-- or the middle of the bar for centered layouts. Everything is placed around its center,
+-- so a bigger icon size grows the bar evenly in all directions.
+local function LayoutIcons(n, p)
+    local dir = GROW[p.grow] or GROW.RIGHT
+    local size, step = p.iconSize, p.iconSize + p.spacing
+    local count = math.max(n, 1)
+    local shift = dir.centered and (count - 1) / 2 or 0
+    for i, f in ipairs(icons) do
+        local offset = (i - 1 - shift) * step
+        f:SetSize(size, size)
+        f:ClearAllPoints()
+        f:SetPoint("CENTER", container, "CENTER", dir[1] * offset, dir[2] * offset)
     end
+
+    -- the drag area while unlocked covers the shown icons
+    local long = count * step - p.spacing + 2 * MOVER_PADDING
+    local short = size + 2 * MOVER_PADDING
+    local middle = ((count - 1) / 2 - shift) * step
+    if dir[1] ~= 0 then
+        mover:SetSize(long, short)
+    else
+        mover:SetSize(short, long)
+    end
+    mover:ClearAllPoints()
+    mover:SetPoint("CENTER", container, "CENTER", dir[1] * middle, dir[2] * middle)
+    shownCount = n
 end
 
--- While unlocked, every icon (not just the anchor under the first one) drags the whole bar.
+local ANCHOR_OFFSET = {
+    CENTER = { 0, 0 }, TOP = { 0, 1 }, BOTTOM = { 0, -1 }, LEFT = { -1, 0 }, RIGHT = { 1, 0 },
+    TOPLEFT = { -1, 1 }, TOPRIGHT = { 1, 1 }, BOTTOMLEFT = { -1, -1 }, BOTTOMRIGHT = { 1, -1 },
+}
+
+-- Settings saved by 0.0.1.
+local function MigrateProfile(p)
+    -- whichever anchor the client picked after dragging (e.g. TOPLEFT of the first
+    -- icon) becomes the first icon's center relative to the screen center
+    if p.point then
+        local own, rel = ANCHOR_OFFSET[p.point], ANCHOR_OFFSET[p.relativePoint or p.point]
+        if own and rel then
+            local half = p.iconSize / 2
+            p.x = Round(rel[1] * UIParent:GetWidth() / 2 + p.x - own[1] * half)
+            p.y = Round(rel[2] * UIParent:GetHeight() / 2 + p.y - own[2] * half)
+        end
+        p.point, p.relativePoint = nil, nil
+    end
+    if p.glowMissing == false then p.glow = "off" end
+    p.glowMissing = nil
+end
+
+-- While unlocked, every icon and the area around them drag the whole bar.
 local function StartDrag()
     if not FB.db.profile.locked then container:StartMoving() end
 end
 
 local function StopDrag()
     container:StopMovingOrSizing()
-    local point, _, relativePoint, x, y = container:GetPoint()
+    local cx, cy = container:GetCenter()
+    local ux, uy = UIParent:GetCenter()
     local p = FB.db.profile
-    p.point, p.relativePoint, p.x, p.y = point, relativePoint, x, y
+    p.x, p.y = Round(cx - ux), Round(cy - uy)
+    FB:ApplyLayout()
+    LibStub("AceConfigRegistry-3.0"):NotifyChange("ForeverBuffed")
 end
 
 local function CreateIcon(i)
@@ -480,7 +580,7 @@ local function CreateIcon(i)
     f.tex:SetAllPoints()
     f.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
-    -- pulsing red border while the buff is missing
+    -- pulsing border: red while the buff is missing, orange while it runs out
     local glow = CreateFrame("Frame", nil, f)
     glow:SetPoint("TOPLEFT", -3, 3)
     glow:SetPoint("BOTTOMRIGHT", 3, -3)
@@ -488,8 +588,8 @@ local function CreateIcon(i)
     local edges = {}
     for j = 1, 4 do
         edges[j] = glow:CreateTexture(nil, "OVERLAY")
-        edges[j]:SetColorTexture(1, 0.15, 0.1, 1)
     end
+    glow.edges = edges
     edges[1]:SetPoint("TOPLEFT"); edges[1]:SetPoint("TOPRIGHT"); edges[1]:SetHeight(2)
     edges[2]:SetPoint("BOTTOMLEFT"); edges[2]:SetPoint("BOTTOMRIGHT"); edges[2]:SetHeight(2)
     edges[3]:SetPoint("TOPLEFT"); edges[3]:SetPoint("BOTTOMLEFT"); edges[3]:SetWidth(2)
@@ -512,8 +612,8 @@ local function CreateIcon(i)
     f.text:SetFont(STANDARD_TEXT_FONT, p.fontSize, "OUTLINE")
     f.text:SetPoint("CENTER", 0, 0)
 
-    PositionIcon(f, i, p)
     icons[i] = f
+    shownCount = -1 -- place the new icon
     return f
 end
 
@@ -558,12 +658,16 @@ local function ShowIcon(i, t, status, remaining, p)
         f.text:SetText("")
     end
 
-    local glow = status == "missing" and p.glowMissing
+    -- glow mode: "off", "missing" or "both" (missing or running out)
+    local mode = t.glow or p.glow
+    local glow = (mode == "both" or (mode == "missing" and status == "missing")) and status or nil
     if glow ~= f.glowOn then
         f.glowOn = glow
         if glow then
+            local c = GLOW_COLOR[glow]
+            for _, edge in ipairs(f.glow.edges) do edge:SetColorTexture(c[1], c[2], c[3], 1) end
             f.glow:Show()
-            f.glow.anim:Play()
+            if not f.glow.anim:IsPlaying() then f.glow.anim:Play() end
         else
             f.glow.anim:Stop()
             f.glow:Hide()
@@ -651,6 +755,7 @@ function FB:Update()
             end
         end
     end
+    if n ~= shownCount then LayoutIcons(n, p) end
     for i = n + 1, #icons do
         icons[i]:Hide()
     end
@@ -658,50 +763,50 @@ end
 
 function FB:ApplyLayout()
     local p = self.db.profile
+    MigrateProfile(p)
     container:ClearAllPoints()
-    container:SetPoint(p.point, UIParent, p.relativePoint, p.x, p.y)
+    container:SetPoint("CENTER", UIParent, "CENTER", p.x, p.y)
     container:SetSize(p.iconSize, p.iconSize)
-    for i, f in ipairs(icons) do
-        PositionIcon(f, i, p)
+    for _, f in ipairs(icons) do
         f.text:SetFont(STANDARD_TEXT_FONT, p.fontSize, "OUTLINE")
         f:EnableMouse(not p.locked)
     end
-    if p.locked then
-        container:SetFrameStrata("MEDIUM")
-        container:EnableMouse(false)
-        container:SetBackdrop(nil)
-        container.label:Hide()
-    else
-        -- above the options window, so the bar can be dragged while it is open
-        container:SetFrameStrata("TOOLTIP")
-        container:EnableMouse(true)
-        container:SetBackdrop(BACKDROP)
-        container:SetBackdropColor(0.1, 0.1, 0.8, 0.6)
-        container:SetBackdropBorderColor(0.4, 0.4, 0.9, 1)
-        container.label:Show()
-    end
+    -- unlocked: above the options window, so the bar can be dragged while it is open
+    container:SetFrameStrata(p.locked and "MEDIUM" or "TOOLTIP")
+    mover:SetShown(not p.locked)
+    shownCount = -1
+    self:Update()
 end
 
 function FB:ResetPosition()
     local p = self.db.profile
-    p.point, p.relativePoint, p.x, p.y = "CENTER", "CENTER", 0, -150
+    p.x, p.y = 0, -150
     self:ApplyLayout()
 end
 
 function FB:CreateFrames()
-    container = CreateFrame("Frame", "ForeverBuffedAnchor", UIParent, "BackdropTemplate")
+    container = CreateFrame("Frame", "ForeverBuffedAnchor", UIParent)
     container:SetFrameStrata("MEDIUM")
     container:SetMovable(true)
     container:SetClampedToScreen(true)
-    container:RegisterForDrag("LeftButton")
     -- the position lives in the profile, not in the client's layout cache
     container:SetDontSavePosition(true)
-    container:SetScript("OnDragStart", StartDrag)
-    container:SetScript("OnDragStop", StopDrag)
 
-    container.label = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    container.label:SetPoint("BOTTOMLEFT", container, "TOPLEFT", 0, 4)
-    container.label:SetText("Forever Buffed - drag to move")
+    -- drag area behind the icons, only shown while unlocked
+    mover = CreateFrame("Frame", nil, container, "BackdropTemplate")
+    mover:SetFrameLevel(container:GetFrameLevel())
+    mover:EnableMouse(true)
+    mover:RegisterForDrag("LeftButton")
+    mover:SetScript("OnDragStart", StartDrag)
+    mover:SetScript("OnDragStop", StopDrag)
+    mover:SetBackdrop(BACKDROP)
+    mover:SetBackdropColor(0.1, 0.1, 0.8, 0.6)
+    mover:SetBackdropBorderColor(0.4, 0.4, 0.9, 1)
+    mover:Hide()
+
+    local label = mover:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("BOTTOMLEFT", mover, "TOPLEFT", 0, 2)
+    label:SetText("Forever Buffed - drag to move")
 
     local driver = CreateFrame("Frame")
     local elapsedTotal = 0
@@ -750,6 +855,8 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
             if t.kind == "aura" then MarkCancelled(t) end
         end
         auraDirty = true
+    elseif event == "MINIMAP_UPDATE_TRACKING" then
+        FB:RefreshTracking()
     elseif event == "SPELLS_CHANGED" then
         FB:RefreshSpells()
     elseif event == "PLAYER_ENTERING_WORLD" then
@@ -843,6 +950,7 @@ function FB:OnEnable()
     for _, event in ipairs({
         "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
         "ADDON_RESTRICTION_STATE_CHANGED", "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
+        "MINIMAP_UPDATE_TRACKING",
     }) do
         eventFrame:RegisterEvent(event)
     end

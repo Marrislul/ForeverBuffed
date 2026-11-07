@@ -1,2 +1,26 @@
-0.0.1:
-- initial release for WoW Forever (1.60.1)
+0.0.2
+
+LAYOUT
+- New grow directions "Centered, horizontal" and "Centered, vertical": the bar stays centered on its spot, however many reminders are showing.
+- Changing the icon size now grows the bar evenly in all directions instead of from a corner.
+- Type in the exact position: Position X / Y, measured from the screen center.
+- Your current position carries over automatically.
+
+GLOW
+- Glow can now be set per reminder: off, when missing, or when missing or running out.
+- Missing glows red, running out glows orange. Great for Battle Shout: let it glow before it drops, so you can build up rage in time.
+
+NEW REMINDERS (off by default)
+- Camp Benefits: the buff from sitting at a campfire.
+- Tracking (any): Find Herbs, Find Minerals, Sense Undead, the hunter tracks... Only one tracking can be on at a time, so any of them counts.
+
+BUFFS THAT DON'T STACK
+Some buffs block a class buff. Those now count as buffed:
+- Arcane Intellect: Boosted Intellect (camp), Scrolls of Intellect, Intellect elixirs
+- Fortitude: Boosted Stamina (camp), Scrolls of Stamina
+- Divine Spirit: Boosted Spirit (camp), Scrolls of Spirit
+- Mark of the Wild: Boosted Stats (camp, Enchanted Lute)
+Rather replace a weaker scroll with your own buff? Turn off "Non-stacking buffs count" for that reminder.
+
+OTHER
+- The "Class & Weapons" tab is now called "Class & General".

@@ -61,6 +61,26 @@ local function WithThreshold(base)
     return t
 end
 
+local GLOW_VALUES = { off = "Off", missing = "When missing", both = "When missing or running out" }
+local GLOW_SORTING = { "off", "missing", "both" }
+
+-- Per-reminder glow; nil in the saved settings means "use the general setting".
+local function GlowSelect(order, get, set)
+    local values = { default = "General setting" }
+    for k, v in pairs(GLOW_VALUES) do values[k] = v end
+    return {
+        type = "select", name = "Glow", order = order,
+        desc = "Pulsing border: red while the buff is missing, orange while it is running out (below the warn threshold).",
+        values = values,
+        sorting = { "default", "off", "missing", "both" },
+        get = function() return get() or "default" end,
+        set = function(_, v)
+            set(v ~= "default" and v or nil)
+            Rebuild()
+        end,
+    }
+end
+
 local options = {
     name = "Forever Buffed",
     type = "group",
@@ -85,9 +105,20 @@ local options = {
                     order = 3,
                     func = function() FB:ResetPosition() end,
                 },
+                x = {
+                    type = "range", name = "Position X", order = 4,
+                    desc = "Horizontal distance of the bar from the screen center. With a centered grow direction this is the middle of the bar, otherwise the middle of the first icon.",
+                    min = -4000, max = 4000, softMin = -1500, softMax = 1500, step = 1, bigStep = 1,
+                },
+                y = {
+                    type = "range", name = "Position Y", order = 5,
+                    desc = "Vertical distance of the bar from the screen center. With a centered grow direction this is the middle of the bar, otherwise the middle of the first icon.",
+                    min = -4000, max = 4000, softMin = -1500, softMax = 1500, step = 1, bigStep = 1,
+                },
                 layoutHeader = { type = "header", name = "Layout", order = 10 },
                 iconSize = {
                     type = "range", name = "Icon size", order = 11,
+                    desc = "Icons grow and shrink around the position, evenly in all directions.",
                     min = 16, max = 128, step = 1,
                 },
                 spacing = {
@@ -96,7 +127,13 @@ local options = {
                 },
                 grow = {
                     type = "select", name = "Grow direction", order = 13,
-                    values = { RIGHT = "Right", LEFT = "Left", UP = "Up", DOWN = "Down" },
+                    desc = "Right, Left, Up, Down: the first icon sits at the position and further icons line up in that direction.\n\n"
+                        .. "Centered: the icons spread out evenly to both sides of the position, so the bar stays centered however many reminders are shown.",
+                    values = {
+                        RIGHT = "Right", LEFT = "Left", UP = "Up", DOWN = "Down",
+                        HCENTER = "Centered, horizontal", VCENTER = "Centered, vertical",
+                    },
+                    sorting = { "RIGHT", "LEFT", "UP", "DOWN", "HCENTER", "VCENTER" },
                 },
                 showTimer = {
                     type = "toggle", name = "Show time left", order = 14,
@@ -106,9 +143,11 @@ local options = {
                     type = "range", name = "Font size", order = 15,
                     min = 8, max = 40, step = 1,
                 },
-                glowMissing = {
-                    type = "toggle", name = "Glow when missing", order = 16,
-                    desc = "Pulsing red border while a buff is missing completely.",
+                glow = {
+                    type = "select", name = "Glow", order = 16,
+                    desc = "Pulsing border: red while a buff is missing, orange while it is running out (below the warn threshold). Each reminder can override this.",
+                    values = GLOW_VALUES,
+                    sorting = GLOW_SORTING,
                 },
                 behaviorHeader = { type = "header", name = "Behavior", order = 20 },
                 threshold = WithThreshold({
@@ -140,7 +179,7 @@ local options = {
                         .. "- buff timers keep running, so a buff that runs out mid-fight is reported\n"
                         .. "- buffs you cast on yourself (e.g. Battle Shout) are picked up immediately\n"
                         .. "- weapon enchants (stones, oils, poisons, imbues) are always tracked live\n"
-                        .. "- buffs that others cast on you, or that get dispelled, show up once combat ends\n"
+                        .. "- buffs that others cast on you, that get dispelled or whose charges are used up (Lightning Shield) show up once combat ends\n"
                         .. "- a buff you right-click away in combat is only noticed until your buffs first change in that fight. "
                         .. "A /cancelaura macro (e.g. /cancelaura Devotion Aura) is always recognised",
                 },
@@ -148,7 +187,7 @@ local options = {
         },
         trackers = {
             type = "group",
-            name = "Class & Weapons",
+            name = "Class & General",
             order = 2,
             args = {},
         },
@@ -162,9 +201,10 @@ local options = {
 }
 
 -- Plain settings in the General tab read and write the profile key of the same name.
+local LAYOUT_KEYS = { x = true, y = true, iconSize = true, spacing = true, grow = true, fontSize = true }
 for key, opt in pairs(options.args.general.args) do
     if not opt.get and opt.type ~= "header" and opt.type ~= "description" and opt.type ~= "execute" then
-        local apply = (key == "iconSize" or key == "spacing" or key == "grow" or key == "fontSize") and Layout or nil
+        local apply = LAYOUT_KEYS[key] and Layout or nil
         opt.get, opt.set = Setting(key, apply)
     end
 end
@@ -178,7 +218,7 @@ local function BuildTrackerArgs()
 
     args.intro = {
         type = "description", order = 0, fontSize = "medium",
-        name = "Reminders for your class. Class reminders only appear once you have learned the spell.\n",
+        name = "Reminders for your class, weapons, gathering and camps. Reminders tied to a spell only appear once you have learned it.\n",
     }
     for i, def in ipairs(list) do
         local function cfg() return P().trackers[def.key] end
@@ -229,8 +269,26 @@ local function BuildTrackerArgs()
                         Rebuild()
                     end,
                 }),
+                glow = GlowSelect(4, function() return cfg().glow end, function(v) cfg().glow = v end),
             },
         }
+        if def.exclusive then
+            local names = {}
+            for _, id in ipairs(def.exclusive) do names[#names + 1] = SpellLabel(id) end
+            args[def.key].args.exclusive = {
+                type = "toggle",
+                name = "Non-stacking buffs count",
+                desc = "These buffs don't stack with it, so having one counts as buffed. "
+                    .. "Turn it off to be reminded anyway, e.g. to replace a weaker scroll with your own buff.\n\n"
+                    .. table.concat(names, "\n"),
+                order = 5,
+                get = function() return cfg().exclusive ~= false end,
+                set = function(_, v)
+                    cfg().exclusive = v
+                    Rebuild()
+                end,
+            }
+        end
     end
     return args
 end
@@ -315,6 +373,7 @@ local function BuildCustomArgs()
                         Rebuild()
                     end,
                 }),
+                glow = GlowSelect(6.5, function() return c.glow end, function(v) c.glow = v end),
                 delete = {
                     type = "execute", name = "Delete", order = 7,
                     confirm = true,

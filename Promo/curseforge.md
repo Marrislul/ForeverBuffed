@@ -13,7 +13,9 @@ I made this for WoW Forever because WeakAuras isn't available there, and I reall
 - **Warlock:** Demon Armor / Demon Skin
 - **Shaman:** weapon imbue (Lightning Shield off by default)
 - **Rogue:** poisons on both weapons
-- **Everyone:** sharpening stones, weightstones and oils. Off by default, turn it on if you use them.
+- **Everyone:** sharpening stones, weightstones and oils, the Camp Benefits buff from a campfire, and minimap tracking (Find Herbs, Find Minerals, Sense Undead, hunter tracks... any of them counts, since only one can be on). Off by default, turn on what you use.
+
+Some buffs don't stack with a class buff: camp object buffs, scrolls and Intellect elixirs. Those count, so with Boosted Intellect from an Incense Candle you won't be told to cast Arcane Intellect. You can turn that off per reminder.
 
 You only get reminded about spells you actually know, so a fresh level 1 priest won't get yelled at about Divine Spirit.
 
@@ -30,12 +32,12 @@ Forever hides buff data from addons while you're fighting. Forever Buffed works 
 - weapon enchants are always tracked live
 - Judgement eats your seal, and the addon knows that
 
-What it can't see: buffs somebody else puts on you during a fight, or buffs that get dispelled. Those fix themselves as soon as combat ends. Right-clicking a buff away mid-fight usually isn't noticed either. If you need that, use a `/cancelaura` macro, that one always works.
+What it can't see: buffs somebody else puts on you during a fight, buffs that get dispelled, or Lightning Shield running out of charges. Those fix themselves as soon as combat ends. Right-clicking a buff away mid-fight usually isn't noticed either. If you need that, use a `/cancelaura` macro, that one always works.
 
 ### Settings
 
 `/fb` opens the options. `/fb unlock` lets you drag the icons around, `/fb lock` when you're done.
 
-You can change the icon size and direction, set the warning time (for everything or per buff), show reminders only in or out of combat, hide them while resting or mounted, and pick what happens when you're out of mana or rage: show the icon, grey it out, or hide it.
+You can change the icon size and direction (or keep the bar centered), type in the exact position, set the warning time (for everything or per buff), show reminders only in or out of combat, hide them while resting or mounted, and pick what happens when you're out of mana or rage: show the icon, grey it out, or hide it. Each reminder can glow when it's missing, or already while it's running out.
 
 Found a bug, or a spell that's missing? Leave a comment. Forever changed a lot of spells and I don't play every class.
