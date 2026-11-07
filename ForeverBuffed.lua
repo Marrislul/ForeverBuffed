@@ -150,10 +150,50 @@ local function NewTracker(key, kind)
         castIDs = {},
         castNames = {},    -- lowercase names of spells that apply the buff
         selfNames = {},    -- subset of castNames that always land on the player
-        consumeNames = {}, -- lowercase names of own casts that remove the buff
         knownCasts = {},   -- lowercase name -> known spell ID
         state = GetState(key),
     }
+end
+
+-- The groups of buffs that don't stack (ns.EXCLUSIVE_GROUPS) that a reminder for these
+-- buffs belongs to. Class buffs match by name (every rank), the others by ID, or by a
+-- name typed into a custom reminder.
+function ns.ExclusiveGroups(ids, names)
+    local idSet, nameSet, typed = {}, {}, {}
+    for _, id in ipairs(ids) do
+        idSet[id] = true
+        AddName(nameSet, SpellName(id))
+    end
+    for _, n in ipairs(names or {}) do
+        AddName(nameSet, n)
+        AddName(typed, n)
+    end
+    local function hits(list, set)
+        for _, id in ipairs(list) do
+            local n = SpellName(id)
+            if idSet[id] or (n and set[strlower(n)]) then return true end
+        end
+        return false
+    end
+    local found = {}
+    for _, g in ipairs(ns.EXCLUSIVE_GROUPS) do
+        if hits(g.byName, nameSet) or hits(g.byID, typed) then found[#found + 1] = g end
+    end
+    return found
+end
+
+-- The other buffs of these groups count as well.
+local function AddExclusive(t, groups)
+    for _, g in ipairs(groups) do
+        for _, id in ipairs(g.byName) do AddName(t.buffNames, SpellName(id)) end
+        for _, id in ipairs(g.byID) do
+            if not t.buffIDs[id] then
+                t.buffIDs[id] = true
+                t.exclusive = t.exclusive or {}
+                t.exclusive[#t.exclusive + 1] = id
+            end
+        end
+    end
 end
 
 -- Display name of a built-in tracker.
@@ -194,17 +234,12 @@ function FB:RebuildTrackers()
         t.needsSpell = def.needsSpell ~= false
         t.noUsable = def.noUsable
         t.castIDs = def.cast or {}
-        for _, id in ipairs(def.consumedBy or {}) do AddName(t.consumeNames, SpellName(id)) end
         for _, id in ipairs(def.buffs or {}) do
             t.buffIDs[id] = true
             t.firstID = t.firstID or id
             AddName(t.buffNames, SpellName(id))
         end
-        -- buffs that don't stack with it; by ID only, several share a name ("Boosted Stats")
-        if cfg.exclusive ~= false then
-            t.exclusive = def.exclusive
-            for _, id in ipairs(def.exclusive or {}) do t.buffIDs[id] = true end
-        end
+        if cfg.exclusive ~= false then AddExclusive(t, ns.ExclusiveGroups(def.buffs or {})) end
         for _, id in ipairs(t.castIDs) do
             local n = SpellName(id)
             AddName(t.castNames, n)
@@ -236,6 +271,7 @@ function FB:RebuildTrackers()
                 AddName(t.buffNames, n)
                 AddName(t.castNames, n)
             end
+            if c.exclusive ~= false then AddExclusive(t, ns.ExclusiveGroups(ids, names)) end
             trackers[#trackers + 1] = t
         end
     end
@@ -419,12 +455,7 @@ local function OnCastSucceeded(_, castGUID, spellID)
     local durations = FB.db.char.durations
     for _, t in ipairs(trackers) do
         local st = t.state
-        if t.kind == "aura" and t.consumeNames[name] then
-            -- e.g. Judgement uses up the seal
-            st.present = false
-            st.expires = 0
-            st.instanceID = nil
-        elseif t.kind == "aura" and t.castNames[name] and (t.selfNames[name] or onSelf) then
+        if t.kind == "aura" and t.castNames[name] and (t.selfNames[name] or onSelf) then
             local duration = durations[name] or st.duration or t.defaultDuration
             st.present = true
             st.expires = (duration and duration > 0) and (now + duration) or 0

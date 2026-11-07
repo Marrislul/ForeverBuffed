@@ -8,9 +8,6 @@ local _, ns = ...
 --   kind        "aura" (buff on you, default), "weapon" (temporary weapon enchant) or
 --               "tracking" (any minimap tracking spell, e.g. Find Herbs)
 --   buffs       spell IDs whose buff satisfies the tracker
---   exclusive   spell IDs of buffs that don't stack with it and count as buffed too
---               (can be turned off per reminder). Matched by ID only, since several share
---               a name, and also found when the game hides them from the buff bar
 --   cast        spells that apply it. The tracker is only active once you know one
 --               of them; the first known one gives the icon and the "enough mana?" check
 --   selfCast    true, or a list of cast IDs, that always land on you. Lets the addon
@@ -19,35 +16,54 @@ local _, ns = ...
 --   label       display name; default: the buff names joined with " / "
 --   needsSpell  false = active without knowing a cast spell
 --   noUsable    true = skip the "enough rage/mana?" check
---   consumedBy  own casts that remove the buff (Judgement uses up the seal)
 --   duration    seconds, for a cast in combat before the buff was ever seen out of
 --               combat (after that the real duration is used)
 --   threshold   default warn threshold in seconds instead of the general one
 --   combatOnly  default for "only in combat"
 --   default     enabled in a new profile
 
--- Buffs that don't stack with a class buff ("exclusive" above):
--- - Forever camp objects give hidden buffs that the game calls "mutually exclusive" with
---   one class buff each. Kings, Might and Wisdom have camp counterparts too (1230098,
---   1230164, 1230587), but the paladin reminder accepts any blessing, so they aren't used.
+-- Buffs that don't stack with each other. A reminder (built-in or custom) for one of them
+-- counts the others as buffed too, can be turned off per reminder.
+--   byName  class buffs, matched by name like the trackers: every rank counts
+--   byID    matched by spell ID only, several share a name ("Boosted Stats"). Also found
+--           when the game hides them from the buff bar (the camp buffs are hidden)
+-- Sources:
+-- - Forever camp objects give buffs that the game calls "mutually exclusive" with one class
+--   buff each. Kings, Might and Wisdom have camp counterparts too (1230098, 1230164,
+--   1230587), but the paladin reminder accepts any blessing, so they aren't grouped.
 -- - Scrolls never stacked with the class buff of the same stat; the stronger one wins.
 -- - Intellect elixirs: reported not to stack with Arcane Intellect. Only the pure Intellect
 --   ones, not Owl, Cunning or Sages.
 -- - Not here: the Blood Shard buffs from Mangletooth (Wisdom of Agamaggan 7764, Rising
 --   Spirit 10767) stack with class buffs.
-local EXCLUSIVE_INTELLECT = {
-    1229513,                      -- Boosted Intellect (camp: Incense Candle)
-    8096, 8097, 8098, 12176,      -- Scroll of Intellect I-IV
-    3166, 11396,                  -- Elixir of Wisdom, Elixir of Greater Intellect
-    1250988, 1250989,             -- Elixir of Lesser Intellect, Elixir of Intellect (Forever)
-}
-local EXCLUSIVE_STAMINA = {
-    1230124,                      -- Boosted Stamina (camp: First Aid Kit)
-    8099, 8100, 8101, 12178,      -- Scroll of Stamina I-IV
-}
-local EXCLUSIVE_SPIRIT = {
-    1229718,                      -- Boosted Spirit (camp: Faction Banner)
-    8112, 8113, 8114, 12177,      -- Scroll of Spirit I-IV
+ns.EXCLUSIVE_GROUPS = {
+    {
+        byName = { 1459, 23028 },           -- Arcane Intellect, Arcane Brilliance
+        byID = {
+            1229513,                        -- Boosted Intellect (camp: Incense Candle)
+            8096, 8097, 8098, 12176,        -- Scroll of Intellect I-IV
+            3166, 11396,                    -- Elixir of Wisdom, Elixir of Greater Intellect
+            1250988, 1250989,               -- Elixir of Lesser Intellect, Elixir of Intellect (Forever)
+        },
+    },
+    {
+        byName = { 1243, 21562 },           -- Power Word: Fortitude, Prayer of Fortitude
+        byID = {
+            1230124,                        -- Boosted Stamina (camp: First Aid Kit)
+            8099, 8100, 8101, 12178,        -- Scroll of Stamina I-IV
+        },
+    },
+    {
+        byName = { 14752, 27681 },          -- Divine Spirit, Prayer of Spirit
+        byID = {
+            1229718,                        -- Boosted Spirit (camp: Faction Banner)
+            8112, 8113, 8114, 12177,        -- Scroll of Spirit I-IV
+        },
+    },
+    {
+        byName = { 1126, 21849 },           -- Mark of the Wild, Gift of the Wild
+        byID = { 1230653 },                 -- Boosted Stats (camp: Enchanted Lute), not the Fish Bowl one
+    },
 }
 
 ns.CLASS_TRACKERS = {
@@ -56,25 +72,16 @@ ns.CLASS_TRACKERS = {
     },
     MAGE = {
         -- Arcane Intellect / Arcane Brilliance
-        {
-            key = "arcaneIntellect", buffs = { 1459, 23028 }, cast = { 1459, 23028 }, selfCast = { 23028 }, default = true,
-            exclusive = EXCLUSIVE_INTELLECT,
-        },
+        { key = "arcaneIntellect", buffs = { 1459, 23028 }, cast = { 1459, 23028 }, selfCast = { 23028 }, default = true },
         -- Ice Armor, Frost Armor, Mage Armor
         { key = "mageArmor", buffs = { 7302, 168, 6117 }, cast = { 7302, 168, 6117 }, selfCast = true, default = true },
     },
     PRIEST = {
         -- Power Word: Fortitude / Prayer of Fortitude
-        {
-            key = "fortitude", buffs = { 1243, 21562 }, cast = { 1243, 21562 }, selfCast = { 21562 }, default = true,
-            exclusive = EXCLUSIVE_STAMINA,
-        },
+        { key = "fortitude", buffs = { 1243, 21562 }, cast = { 1243, 21562 }, selfCast = { 21562 }, default = true },
         { key = "innerFire", buffs = { 588 }, cast = { 588 }, selfCast = true, duration = 600, default = true },
         -- Divine Spirit / Prayer of Spirit
-        {
-            key = "divineSpirit", buffs = { 14752, 27681 }, cast = { 14752, 27681 }, selfCast = { 27681 }, default = true,
-            exclusive = EXCLUSIVE_SPIRIT,
-        },
+        { key = "divineSpirit", buffs = { 14752, 27681 }, cast = { 14752, 27681 }, selfCast = { 27681 }, default = true },
         -- racial: Touch of Weakness (Undead), Shadowguard (Troll)
         { key = "touchOfWeakness", buffs = { 2652 }, cast = { 2652 }, selfCast = true, duration = 600, default = true },
         { key = "shadowguard", buffs = { 18137 }, cast = { 18137 }, selfCast = true, duration = 600, default = true },
@@ -83,10 +90,7 @@ ns.CLASS_TRACKERS = {
     },
     DRUID = {
         -- Mark of the Wild / Gift of the Wild (Omen of Clarity is passive on Forever)
-        {
-            key = "markOfTheWild", buffs = { 1126, 21849 }, cast = { 1126, 21849 }, selfCast = { 21849 }, default = true,
-            exclusive = { 1230653 }, -- Boosted Stats (camp: Enchanted Lute), not the Fish Bowl one (1230098)
-        },
+        { key = "markOfTheWild", buffs = { 1126, 21849 }, cast = { 1126, 21849 }, selfCast = { 21849 }, default = true },
         { key = "thorns", buffs = { 467 }, cast = { 467 }, default = false },
     },
     PALADIN = {
@@ -108,12 +112,12 @@ ns.CLASS_TRACKERS = {
         { key = "righteousFury", buffs = { 25780 }, cast = { 25780 }, selfCast = true, default = false },
         {
             -- Righteousness (rank 1 is 20154, replaced by 21084 once Judgement is learned),
-            -- Fury (Forever tank seal), Crusader, Justice, Light, Wisdom, Command
+            -- Fury (Forever tank seal), Crusader, Justice, Light, Wisdom, Command.
+            -- Judgement doesn't use up the seal on Forever.
             key = "seal", label = "Seal (any)",
             buffs = { 20154, 21084, 1311649, 1311656, 21082, 20164, 20165, 20166, 20375 },
             cast = { 21084, 20154, 1311649, 1311656, 21082, 20164, 20165, 20166, 20375 },
             selfCast = true,
-            consumedBy = { 20271 }, -- Judgement
             duration = 30, threshold = 5, combatOnly = true, default = true,
         },
     },

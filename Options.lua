@@ -81,6 +81,31 @@ local function GlowSelect(order, get, set)
     }
 end
 
+-- Per-reminder switch for the buffs that don't stack with it (Data.lua EXCLUSIVE_GROUPS);
+-- only shown if the reminder belongs to such a group. nil in the settings means on.
+local function ExclusiveToggle(order, groups, get, set)
+    return {
+        type = "toggle", name = "Non-stacking buffs count", order = order,
+        hidden = function() return not groups()[1] end,
+        desc = function()
+            local names = {}
+            for _, g in ipairs(groups()) do
+                for _, list in ipairs({ g.byName, g.byID }) do
+                    for _, id in ipairs(list) do names[#names + 1] = SpellLabel(id) end
+                end
+            end
+            return "These buffs don't stack with each other, so any of them counts as buffed. "
+                .. "Turn it off to be reminded anyway, e.g. to replace a weaker scroll with a stronger buff.\n\n"
+                .. table.concat(names, "\n")
+        end,
+        get = function() return get() ~= false end,
+        set = function(_, v)
+            set(v)
+            Rebuild()
+        end,
+    }
+end
+
 local options = {
     name = "Forever Buffed",
     type = "group",
@@ -222,6 +247,7 @@ local function BuildTrackerArgs()
     }
     for i, def in ipairs(list) do
         local function cfg() return P().trackers[def.key] end
+        local groups = ns.ExclusiveGroups(def.buffs or {})
         args[def.key] = {
             type = "group",
             inline = true,
@@ -270,25 +296,10 @@ local function BuildTrackerArgs()
                     end,
                 }),
                 glow = GlowSelect(4, function() return cfg().glow end, function(v) cfg().glow = v end),
+                exclusive = ExclusiveToggle(5, function() return groups end,
+                    function() return cfg().exclusive end, function(v) cfg().exclusive = v end),
             },
         }
-        if def.exclusive then
-            local names = {}
-            for _, id in ipairs(def.exclusive) do names[#names + 1] = SpellLabel(id) end
-            args[def.key].args.exclusive = {
-                type = "toggle",
-                name = "Non-stacking buffs count",
-                desc = "These buffs don't stack with it, so having one counts as buffed. "
-                    .. "Turn it off to be reminded anyway, e.g. to replace a weaker scroll with your own buff.\n\n"
-                    .. table.concat(names, "\n"),
-                order = 5,
-                get = function() return cfg().exclusive ~= false end,
-                set = function(_, v)
-                    cfg().exclusive = v
-                    Rebuild()
-                end,
-            }
-        end
     end
     return args
 end
@@ -352,6 +363,8 @@ local function BuildCustomArgs()
                         Rebuild()
                     end,
                 },
+                exclusive = ExclusiveToggle(3.7, function() return ns.ExclusiveGroups(ns.ParseSpellList(c.spells)) end,
+                    function() return c.exclusive end, function(v) c.exclusive = v end),
                 spells = {
                     type = "input", name = "Spell IDs / names", order = 4, width = "double",
                     get = function() return c.spells end,

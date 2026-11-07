@@ -1,26 +1,7 @@
-0.0.2
+0.0.3
 
-LAYOUT
-- New grow directions "Centered, horizontal" and "Centered, vertical": the bar stays centered on its spot, however many reminders are showing.
-- Changing the icon size now grows the bar evenly in all directions instead of from a corner.
-- Type in the exact position: Position X / Y, measured from the screen center.
-- Your current position carries over automatically.
-
-GLOW
-- Glow can now be set per reminder: off, when missing, or when missing or running out.
-- Missing glows red, running out glows orange. Great for Battle Shout: let it glow before it drops, so you can build up rage in time.
-
-NEW REMINDERS (off by default)
-- Camp Benefits: the buff from sitting at a campfire.
-- Tracking (any): Find Herbs, Find Minerals, Sense Undead, the hunter tracks... Only one tracking can be on at a time, so any of them counts.
-
-BUFFS THAT DON'T STACK
-Some buffs block a class buff. Those now count as buffed:
-- Arcane Intellect: Boosted Intellect (camp), Scrolls of Intellect, Intellect elixirs
-- Fortitude: Boosted Stamina (camp), Scrolls of Stamina
-- Divine Spirit: Boosted Spirit (camp), Scrolls of Spirit
-- Mark of the Wild: Boosted Stats (camp, Enchanted Lute)
-Rather replace a weaker scroll with your own buff? Turn off "Non-stacking buffs count" for that reminder.
-
-OTHER
-- The "Class & Weapons" tab is now called "Class & General".
+FIXES
+- Paladin: Judgement no longer makes the seal reminder pop up. On Forever, Judgement doesn't use up your seal, it stays active.
+- Buffs that don't stack now count both ways, also for your own reminders. Track an Intellect elixir and a mage's Arcane Intellect replaces it? The elixir reminder now counts Arcane Intellect as buffed instead of nagging.
+  Groups: Intellect (Arcane Intellect / Brilliance, Boosted Intellect, Scrolls of Intellect, Intellect elixirs), Stamina (Fortitude, Boosted Stamina, Scrolls of Stamina), Spirit (Divine Spirit, Boosted Spirit, Scrolls of Spirit), Mark of the Wild (Boosted Stats from the Enchanted Lute).
+  Your own reminders get the "Non-stacking buffs count" switch too.
