@@ -9,7 +9,7 @@ I made this for WoW Forever because WeakAuras isn't available there, and I reall
 - **Priest:** Fortitude, Inner Fire, Divine Spirit, Touch of Weakness / Shadowguard (Shadow Protection is there too, off by default)
 - **Druid:** Mark of the Wild (Thorns off by default)
 - **Paladin:** Your blessing, your aura, and your seal while in combat (Righteous Fury off by default)
-- **Hunter:** Aspects, Trueshot Aura
+- **Hunter:** Your aspect, Trueshot Aura
 - **Warlock:** Demon Armor / Demon Skin
 - **Shaman:** Weapon imbue (Lightning Shield off by default)
 - **Rogue:** Poisons on both weapons
@@ -17,11 +17,15 @@ I made this for WoW Forever because WeakAuras isn't available there, and I reall
 
 Some buffs don't stack with a class buff: camp object buffs, scrolls and Intellect elixirs. Those count both ways: with Boosted Intellect from an Incense Candle you won't be told to cast Arcane Intellect, and a reminder for your Intellect elixir is happy when a mage's Arcane Intellect replaced it. You can turn that off per reminder.
 
+Buffs from other players only count when they actually do the job. A random paladin's Wisdom doesn't hide the reminder for your own blessing, because yours stacks on top. Only once others have covered every blessing you know do you get left alone. Paladin auras and hunter aspects work the same way. And a rank 1 Fortitude from a low-level priest doesn't count for a level 60 priest who can cast a stronger one.
+
 You only get reminded about spells you actually know, so a fresh level 1 priest won't get yelled at about Divine Spirit.
 
 ### Add your own
 
-Any buff can be added by spell ID or by name: flasks, elixirs, food, the Mark of the Wild your druid keeps forgetting. Type `/fb buffs` and it lists everything you have on right now with the IDs, so you don't have to dig through Wowhead.
+Any buff can be added by spell ID or by name: flasks, elixirs, food, the Mark of the Wild your druid keeps forgetting.
+
+You don't have to dig through Wowhead for the IDs. The **Your Buffs** tab in the options lists everything you have on right now, with spell ID, rank, who cast it, time left and which reminder it counts for. One click on **Add reminder** and it's on your list. `/fb buffs` prints the same list in chat.
 
 ### What happens in combat
 
