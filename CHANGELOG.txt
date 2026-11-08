@@ -1,8 +1,9 @@
-0.0.4
-
-FIXES
-- Paladin: Seal of Command's extra damage no longer restarts the seal timer. After a few hits the seal reminder could stay away in combat even though the seal had run out. Only casts you start yourself count now, procs that share a buff's name are ignored.
+0.0.5
 
 NEW
-- /fb buffs also shows how long each buff has left.
-- /fb debug explains in chat what the addon sees (casts, buff checks). Handy if you want to report a bug.
+- "Your Buffs" tab in the options: every buff on you with icon, spell ID, who cast it, time left and which reminder it counts for. "Add reminder" puts a buff into Custom Buffs with one click. Hidden camp buffs and temporary weapon enchants are listed too. The list updates by itself while the tab is open.
+- /fb buffs also shows who cast each buff.
+
+FIXES
+- Only your own blessing, paladin aura or hunter aspect counts now. Another paladin's Wisdom no longer hides the reminder after your Might is gone, and the icon shows your Might instead of their Wisdom. The same goes for another paladin's aura or another hunter's Aspect of the Pack or Wild. Buffs of others (and the camp buffs that block a blessing) still count once they cover everything you know, e.g. someone else's Might while you only know Might. If your usual one is already on you from someone else, the icon suggests one you can still add.
+- Someone else's buff of a lower rank than the one you can cast doesn't count anymore, e.g. a Fortitude rank 1 from a low-level priest on a level 60 priest. The same rank or a stronger one counts as before. Group versions count like the single ones of the same level (Greater Blessing of Might rank 1 = Blessing of Might rank 6).

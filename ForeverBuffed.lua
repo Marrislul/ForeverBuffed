@@ -93,6 +93,7 @@ local function FormatTime(seconds)
     if seconds >= 60 then return format("%dm", ceil(seconds / 60)) end
     return format("%d", ceil(seconds))
 end
+ns.FormatTime = FormatTime
 
 -- Spell ID (current rank) if the player knows the spell, else nil. Takes an ID or a name.
 local function KnownSpell(spell)
@@ -229,6 +230,7 @@ function FB:RebuildTrackers()
         if not enabled then return end
 
         local t = NewTracker(def.key, def.kind)
+        t.def = def
         t.slot = def.slot
         t.glow = cfg.glow
         t.threshold = cfg.threshold > 0 and cfg.threshold or def.threshold or 0
@@ -247,6 +249,33 @@ function FB:RebuildTrackers()
             AddName(t.buffNames, SpellName(id))
         end
         if cfg.exclusive ~= false then AddExclusive(t, ns.ExclusiveGroups(def.buffs or {})) end
+        t.own = def.own
+        local kinds = def.kinds
+        if def.own and not kinds then
+            kinds = {}
+            local seen = {}
+            for _, id in ipairs(def.buffs or {}) do
+                local n = SpellName(id)
+                if n and not seen[n] then
+                    seen[n] = true
+                    kinds[#kinds + 1] = { byName = { id } }
+                end
+            end
+        end
+        if kinds then
+            t.kinds = {}
+            for _, k in ipairs(kinds) do
+                local kind = { names = {}, list = {}, ids = k.byID or {} }
+                for _, id in ipairs(k.byName) do
+                    local n = SpellName(id)
+                    if n and not kind.names[strlower(n)] then
+                        kind.names[strlower(n)] = true
+                        kind.list[#kind.list + 1] = strlower(n)
+                    end
+                end
+                t.kinds[#t.kinds + 1] = kind
+            end
+        end
         for _, id in ipairs(t.castIDs) do
             local n = SpellName(id)
             AddName(t.castNames, n)
@@ -262,6 +291,7 @@ function FB:RebuildTrackers()
         local ids, names = ns.ParseSpellList(c.spells)
         if c.enabled and (#ids > 0 or #names > 0) then
             local t = NewTracker("custom" .. c.uid, "aura")
+            t.custom = c
             t.threshold = c.threshold or 0
             t.glow = c.glow
             t.combatOnly = c.combatOnly
@@ -364,6 +394,16 @@ local function ReadAura(aura, rec)
     rec.expires = expires
     rec.duration = duration
     rec.instance = Plain(aura.auraInstanceID)
+    -- true = cast by you, false = by someone else, nil = unknown. The caster's unit is
+    -- nil for players outside your group.
+    local source = aura.sourceUnit
+    if IsSecret(source) then
+        rec.mine = nil
+    elseif source == nil then
+        rec.mine = false
+    else
+        rec.mine = Plain(UnitIsUnit(source, "player"))
+    end
     return true
 end
 
@@ -375,6 +415,67 @@ local function FindHiddenAura(ids)
         local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
         if ok and not IsSecret(aura) and aura and ReadAura(aura, hiddenRec) then return hiddenRec end
     end
+end
+
+-- Prefer a buff without expiry, then the one lasting longest.
+local function Longer(best, rec)
+    if not best or (best.expires ~= 0 and (rec.expires == 0 or rec.expires > best.expires)) then
+        return rec
+    end
+    return best
+end
+
+-- Someone else's buff of a lower rank than the strongest of these buff names (a set of
+-- lowercase names) you know: yours would replace it, so it doesn't count. Ranks are
+-- compared by training level (ns.RANKS); spells not listed there are never weaker.
+local function Weaker(t, rec, names)
+    if rec.mine ~= false then return false end
+    local level = ns.RANKS[rec.id]
+    if not level then return false end
+    for name in pairs(names) do
+        local known = t.knownCasts[name]
+        if known and (ns.RANKS[known] or 0) > level then return true end
+    end
+    return false
+end
+
+-- The kind (see FreeKind) a buff name belongs to.
+local function KindOf(t, name)
+    for _, kind in ipairs(t.kinds or {}) do
+        if kind.names[name] then return kind end
+    end
+end
+
+-- For a tracker that counts only your own buff while none of yours is on you (scan
+-- records 1..n): the name of a buff you could still add, preferably the one you used
+-- last. Nil if the buffs of others already cover every kind you know, at least as strong
+-- as yours, plus the time the first of those runs out (0 = never).
+local function FreeKind(t, n)
+    local last = t.state.lastName
+    local free, coverEnds
+    for _, kind in ipairs(t.kinds) do
+        local known
+        for _, name in ipairs(kind.list) do
+            if not known and t.knownCasts[name] then known = name end
+        end
+        if known then
+            local cover
+            for i = 1, n do
+                local rec = scan[i]
+                if kind.names[rec.name] and not Weaker(t, rec, kind.names) then cover = Longer(cover, rec) end
+            end
+            cover = cover or FindHiddenAura(kind.ids)
+            if not cover then
+                if last and kind.names[last] and t.knownCasts[last] then return last end
+                free = free or known
+            elseif cover.expires > 0 and (not coverEnds or coverEnds == 0 or cover.expires < coverEnds) then
+                coverEnds = cover.expires
+            else
+                coverEnds = coverEnds or 0
+            end
+        end
+    end
+    return free, coverEnds or 0
 end
 
 -- Reads all player buffs and updates every aura tracker. Only possible while
@@ -406,18 +507,24 @@ local function ScanAuras()
             local best
             for i = 1, n do
                 local rec = scan[i]
-                if t.buffIDs[rec.id] or t.buffNames[rec.name] then
-                    -- prefer a buff without expiry, then the one lasting longest
-                    if not best or (best.expires ~= 0 and (rec.expires == 0 or rec.expires > best.expires)) then
-                        best = rec
-                    end
+                -- with t.own the buffs of others only count through FreeKind
+                if (t.buffIDs[rec.id] or t.buffNames[rec.name]) and not (t.own and rec.mine == false)
+                    and not Weaker(t, rec, t.knownCasts) then
+                    best = Longer(best, rec)
                 end
             end
             if not best and t.exclusive then best = FindHiddenAura(t.exclusive) end
             local st = t.state
+            local covered, coverEnds
+            st.suggest = nil
+            if not best and t.kinds then
+                st.suggest, coverEnds = FreeKind(t, n)
+                covered = not st.suggest
+            end
             if best then
                 if not st.present or st.lastName ~= best.name or math.abs(st.expires - best.expires) > 1 then
-                    Debug("scan: %s = %s (%d), %s", t.key, best.name, best.id,
+                    Debug("scan: %s = %s (%d)%s, %s", t.key, best.name, best.id,
+                        best.mine == false and " from someone else" or "",
                         best.expires > 0 and format("%ds left", best.expires - GetTime()) or "no time limit")
                 end
                 st.present = true
@@ -427,10 +534,20 @@ local function ScanAuras()
                 st.instanceID = best.instance
                 t.seenIDs[best.id] = true
                 if best.duration > 0 then durations[best.name] = best.duration end
+            elseif covered then
+                -- the icon keeps showing your own buff (lastName) once a cover runs out
+                if not st.present or math.abs(st.expires - coverEnds) > 1 then
+                    Debug("scan: %s, the buffs of others cover all you know, %s", t.key,
+                        coverEnds > 0 and format("first ends in %ds", coverEnds - GetTime()) or "no time limit")
+                end
+                st.present = true
+                st.expires = coverEnds
+                st.instanceID = nil
             elseif hidden == 0 or TrackerReadable(t) then
                 if st.present then
-                    Debug("scan: %s not found (%d hidden buffs, %s)", t.key, hidden,
-                        InCombatLockdown() and "in combat" or "out of combat")
+                    Debug("scan: %s not found (%d hidden buffs, %s)%s", t.key, hidden,
+                        InCombatLockdown() and "in combat" or "out of combat",
+                        st.suggest and ", you could add " .. st.suggest or "")
                 end
                 st.present = false
                 st.expires = 0
@@ -504,6 +621,7 @@ local function OnCastSucceeded(_, castGUID, spellID)
                 st.present = true
                 st.expires = (duration and duration > 0) and (now + duration) or 0
                 st.lastName = name
+                st.suggest = nil
                 st.instanceID = nil -- the new instance ID can't be read in combat
                 Debug("cast: %s -> %s, %ds", name, t.key, duration or 0)
             else
@@ -539,11 +657,14 @@ local function OnBuffButtonClick(_, button, mouseButton)
 end
 
 -- "/cancelaura Battle Shout", "Battle Shout(Rank 3)" or a spell ID: always readable.
+-- With t.own only your own buff (lastName) matters, not someone else's of the same family.
 local function OnCancelName(name)
     if IsSecret(name) or type(name) ~= "string" then return end
     name = strlower((name:gsub("%s*%(.-%)%s*$", "")))
     for _, t in ipairs(trackers) do
-        if t.kind == "aura" and t.buffNames[name] then MarkCancelled(t) end
+        if t.kind == "aura" and t.buffNames[name] and (not t.own or t.state.lastName == name) then
+            MarkCancelled(t)
+        end
     end
     auraDirty = true
 end
@@ -697,9 +818,11 @@ local function CreateIcon(i)
     return f
 end
 
--- Icon texture and the spell to cast for a tracker (the variant you used last, if known).
+-- Icon texture and the spell to cast for a tracker: the variant you used last, or one
+-- you can still add (see FreeKind), if known.
 local function TrackerIcon(t)
-    local spell = (t.state.lastName and t.knownCasts[t.state.lastName]) or t.castSpell
+    local name = t.state.suggest or t.state.lastName
+    local spell = (name and t.knownCasts[name]) or t.castSpell
     local texture = spell and C_Spell.GetSpellTexture(spell)
     if texture then return texture, spell end
     if t.kind == "weapon" then
@@ -954,39 +1077,177 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 -------------------------------------------------------------------------------
+-- Buff list: /fb buffs and the Buffs tab
+-------------------------------------------------------------------------------
+
+-- Hidden buffs worth asking for by spell ID (the camp buffs); they are not in the buff list.
+local hiddenProbe
+local function HiddenProbeIDs()
+    if not hiddenProbe then
+        hiddenProbe = {}
+        local function add(ids)
+            for _, id in ipairs(ids or {}) do hiddenProbe[#hiddenProbe + 1] = id end
+        end
+        for _, g in ipairs(ns.EXCLUSIVE_GROUPS) do add(g.byID) end
+        for _, defs in pairs(ns.CLASS_TRACKERS) do
+            for _, def in ipairs(defs) do
+                for _, k in ipairs(def.kinds or {}) do add(k.byID) end
+            end
+        end
+    end
+    return hiddenProbe
+end
+
+local function Active(t)
+    return not (t.needsSpell and not t.castSpell)
+end
+
+-- The active reminders a buff counts for. note "weaker": someone else's, weaker than the
+-- one you can cast; "others": someone else's for a reminder that counts only yours;
+-- "kind": it takes the place of one of the reminder's buffs.
+local function BuffTrackers(e)
+    local list = {}
+    for _, t in ipairs(trackers) do
+        if t.kind == "tracking" and Active(t) and t.knownCasts[e.key] then
+            list[#list + 1] = { tracker = t }
+        elseif t.kind == "aura" and Active(t) then
+            if t.buffIDs[e.id] or t.buffNames[e.key] then
+                local note
+                local kind = t.own and KindOf(t, e.key)
+                if Weaker(t, e, kind and kind.names or t.knownCasts) then
+                    note = "weaker"
+                elseif t.own and e.mine == false then
+                    note = "others"
+                end
+                list[#list + 1] = { tracker = t, note = note }
+            else
+                for _, kind in ipairs(t.kinds or {}) do
+                    for _, id in ipairs(kind.ids) do
+                        if id == e.id then list[#list + 1] = { tracker = t, note = "kind" } end
+                    end
+                end
+            end
+        end
+    end
+    return list
+end
+
+local function ReadBuffEntry(aura, hiddenAura)
+    local name, id = aura.name, aura.spellId
+    if IsSecret(name) or IsSecret(id) then return nil end
+    local e = {
+        name = name,
+        id = id,
+        key = strlower(name),
+        hidden = hiddenAura,
+        icon = Plain(aura.icon),
+        expires = Plain(aura.expirationTime) or 0,
+        duration = Plain(aura.duration) or 0,
+        stacks = Plain(aura.applications) or 0,
+        rank = Plain(C_Spell.GetSpellSubtext(id)), -- "Rank 3", may be empty
+    }
+    -- mine: true / false / nil (unknown); from: the caster's name if in your group
+    local source = aura.sourceUnit
+    if IsSecret(source) then
+        e.mine = nil
+    elseif source == nil then
+        e.mine = false
+    else
+        e.mine = Plain(UnitIsUnit(source, "player"))
+        if e.mine == false then e.from = Plain(UnitName(source)) end
+    end
+    e.trackers = BuffTrackers(e)
+    return e
+end
+
+-- Your buffs (including the hidden camp buffs) and temporary weapon enchants. Nil while
+-- the game hides buff data (combat), else the list and the number of buffs it keeps secret.
+function FB:ReadBuffs()
+    if AurasRestricted() then return nil end
+    local list, secret, seen = {}, 0, {}
+    for i = 1, 255 do
+        local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+        if not ok then break end
+        if IsSecret(aura) then
+            secret = secret + 1
+        elseif not aura then
+            break
+        else
+            local e = ReadBuffEntry(aura, false)
+            if e then
+                list[#list + 1] = e
+                seen[e.id] = true
+            else
+                secret = secret + 1
+            end
+        end
+    end
+    for _, id in ipairs(HiddenProbeIDs()) do
+        if not seen[id] then
+            local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
+            local e = ok and not IsSecret(aura) and aura and ReadBuffEntry(aura, true)
+            if e then
+                list[#list + 1] = e
+                seen[id] = true
+            end
+        end
+    end
+    for _, slot in ipairs({ "MainHand", "OffHand" }) do
+        for _, info in pairs(C_Item.GetWeaponEnchantInfo(Enum.WeaponSlot[slot])) do
+            if info.hasEnchant and info.enchantType ~= Enum.ItemEnchantType.Permanent then
+                local e = {
+                    weapon = slot,
+                    icon = GetInventoryItemTexture("player", INV_SLOT[slot]),
+                    expires = info.timeLeft > 0 and (GetTime() + info.timeLeft / 1000) or 0,
+                    duration = 0,
+                    charges = info.charges,
+                    enchantID = info.enchantID,
+                    trackers = {},
+                }
+                for _, t in ipairs(trackers) do
+                    if t.kind == "weapon" and t.slot == slot and Active(t) then
+                        e.trackers[#e.trackers + 1] = { tracker = t }
+                    end
+                end
+                list[#list + 1] = e
+                break
+            end
+        end
+    end
+    return list, secret
+end
+
+-- Who cast a buff from ReadBuffs.
+function ns.BuffCaster(e)
+    if e.mine then return "you" end
+    if e.from then return e.from end
+    if e.mine == false then return "unknown (not in your group)" end
+    return "unknown"
+end
+
+-------------------------------------------------------------------------------
 -- Slash command
 -------------------------------------------------------------------------------
 
 function FB:PrintBuffs()
-    if AurasRestricted() then
+    local list, secret = self:ReadBuffs()
+    if not list then
         self:Print("The game hides buff data during combat. Try again afterwards.")
         return
     end
     self:Print("Your buffs (name - spell ID):")
-    local hidden = 0
-    for i = 1, 255 do
-        local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
-        if not ok then break end
-        if IsSecret(aura) or (aura and (IsSecret(aura.name) or IsSecret(aura.spellId))) then
-            hidden = hidden + 1
-        elseif not aura then
-            break
+    for _, e in ipairs(list) do
+        local left = e.expires > 0 and FormatTime(e.expires - GetTime()) .. " left" or "no time limit"
+        if e.weapon then
+            local where = e.weapon == "MainHand" and "Main hand" or "Off hand"
+            self:Print(format("   %s: temporary weapon enchant (%s)", where, left))
         else
-            local expires = Plain(aura.expirationTime)
-            local left = (expires and expires > 0) and (", " .. FormatTime(expires - GetTime())) or ""
-            self:Print(format("   %s - |cffffd200%d|r%s", aura.name, aura.spellId, left))
+            self:Print(format("   %s - |cffffd200%d|r, %s, from %s%s", e.name, e.id, left, ns.BuffCaster(e),
+                e.hidden and ", hidden buff" or ""))
         end
     end
-    if hidden > 0 then
-        self:Print(format("   (%d buff(s) hidden by the game)", hidden))
-    end
-    for _, slot in ipairs({ "MainHand", "OffHand" }) do
-        local has, left = ReadWeaponEnchant(slot)
-        if has then
-            local where = slot == "MainHand" and "Main hand" or "Off hand"
-            local timeText = left > 0 and (FormatTime(left) .. " left") or "no time limit"
-            self:Print(format("   %s: temporary weapon enchant (%s)", where, timeText))
-        end
+    if secret > 0 then
+        self:Print(format("   (%d buff(s) hidden by the game)", secret))
     end
 end
 

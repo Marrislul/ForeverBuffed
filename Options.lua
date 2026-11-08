@@ -222,6 +222,12 @@ local options = {
             order = 3,
             args = {},
         },
+        buffs = {
+            type = "group",
+            name = "Your Buffs",
+            order = 4,
+            args = {},
+        },
     },
 }
 
@@ -319,7 +325,7 @@ local function BuildCustomArgs()
             type = "description",
             order = 2,
             fontSize = "medium",
-            name = "Tip: type |cffffd200/fb buffs|r to list all your current buffs with their spell IDs. IDs from wowhead.com/classic work as well. Names work too (e.g. \"Well Fed\"), but must match the buff name in your game language.\n",
+            name = "Tip: the |cffffd200Your Buffs|r tab lists all your current buffs with their spell IDs and adds them here with one click. IDs from wowhead.com/classic work as well. Names work too (e.g. \"Well Fed\"), but must match the buff name in your game language.\n",
         },
     }
     for i, c in ipairs(P().custom) do
@@ -398,6 +404,196 @@ local function BuildCustomArgs()
     end
     return args
 end
+
+-------------------------------------------------------------------------------
+-- Your Buffs tab: what is on you right now
+-------------------------------------------------------------------------------
+
+local BUFF_ROWS = 60
+local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
+local buffList, buffSecret, buffReadAt, buffListOld = {}, 0, nil, false
+
+-- The current buffs, read once per frame so that every option of one redraw sees the
+-- same list. In combat the game hides them and the list from before the fight stays.
+local function BuffList()
+    local now = GetTime()
+    if buffReadAt ~= now then
+        buffReadAt = now
+        local list, secret = FB:ReadBuffs()
+        if list then
+            buffList, buffSecret, buffListOld = list, secret, false
+        else
+            buffListOld = true
+        end
+    end
+    return buffList
+end
+
+local function TrackerName(t)
+    if t.def then return ns.TrackerLabel(t.def) end
+    return CustomName(t.custom)
+end
+
+local function InCustomList(e)
+    for _, c in ipairs(P().custom) do
+        local ids, names = ns.ParseSpellList(c.spells)
+        for _, id in ipairs(ids) do
+            local n = C_Spell.GetSpellName(id)
+            if id == e.id or (n and strlower(n) == e.key) then return true end
+        end
+        for _, n in ipairs(names) do
+            if strlower(n) == e.key then return true end
+        end
+    end
+    return false
+end
+
+local function BuffRowText(e)
+    local lines = {}
+    if e.weapon then
+        lines[1] = string.format("|cffffd200%s: temporary weapon enchant|r",
+            e.weapon == "MainHand" and "Main hand" or "Off hand")
+        if e.enchantID and e.enchantID > 0 then
+            lines[1] = lines[1] .. string.format("  |cff999999enchant ID %d|r", e.enchantID)
+        end
+    else
+        local rank = (e.rank and e.rank ~= "") and (" " .. e.rank) or ""
+        lines[1] = string.format("|cffffd200%s|r%s  |cff999999spell ID %d|r", e.name, rank, e.id)
+        if e.stacks > 1 then lines[1] = lines[1] .. string.format("  x%d", e.stacks) end
+        if e.hidden then lines[1] = lines[1] .. "  |cff999999(hidden buff)|r" end
+    end
+
+    local info = {}
+    if not e.weapon then info[1] = "cast by " .. ns.BuffCaster(e) end
+    if e.expires > 0 then
+        local left = ns.FormatTime(math.max(0, e.expires - GetTime())) .. " left"
+        if e.duration > 0 then left = left .. " of " .. ns.FormatTime(e.duration) end
+        info[#info + 1] = left
+    else
+        info[#info + 1] = "no time limit"
+    end
+    if e.charges and e.charges > 0 then info[#info + 1] = string.format("%d charges", e.charges) end
+    lines[2] = table.concat(info, ", ")
+
+    if e.trackers[1] then
+        local names = {}
+        for _, m in ipairs(e.trackers) do
+            local n = TrackerName(m.tracker)
+            if m.note == "weaker" then
+                n = n .. " |cffff9050(weaker than yours: doesn't count)|r"
+            elseif m.note == "others" then
+                n = n .. " |cffaaaaaa(not yours: only counts if you can't add your own)|r"
+            elseif m.note == "kind" then
+                n = n .. " |cffaaaaaa(takes the place of one of them)|r"
+            end
+            names[#names + 1] = n
+        end
+        lines[3] = "|cff80ff80Counts for:|r " .. table.concat(names, ", ")
+    else
+        lines[3] = "|cff999999No reminder uses it.|r"
+    end
+    return table.concat(lines, "\n")
+end
+
+local function BuildBuffArgs()
+    local args = {
+        intro = {
+            type = "description", order = 0, fontSize = "medium",
+            name = function()
+                local list = BuffList()
+                local text = "All buffs on you right now: spell ID, who cast them, time left and which reminder they count for. "
+                    .. "|cffffd200Add reminder|r puts a buff into Custom Buffs. The list updates by itself while this tab is open."
+                if buffListOld then
+                    text = text .. "\n\n|cffff6060The game hides buff data during combat. This is the list from before the fight.|r"
+                end
+                if not list[1] then text = text .. "\n\nYou have no buffs right now." end
+                if buffSecret > 0 then
+                    text = text .. string.format("\n\n%d buff(s) hidden by the game.", buffSecret)
+                end
+                return text .. "\n"
+            end,
+        },
+    }
+    for i = 1, BUFF_ROWS do
+        local function entry() return BuffList()[i] end
+        args["buff" .. i] = {
+            type = "description", order = i * 3, fontSize = "medium", width = 2.4,
+            hidden = function() return not entry() end,
+            name = function()
+                local e = entry()
+                return e and BuffRowText(e) or ""
+            end,
+            image = function()
+                local e = entry()
+                return e and e.icon or QUESTION_MARK
+            end,
+            imageWidth = 28,
+            imageHeight = 28,
+        }
+        args["add" .. i] = {
+            type = "execute", order = i * 3 + 1, width = 0.8,
+            name = function()
+                local e = entry()
+                return (e and not e.weapon and InCustomList(e)) and "In your list" or "Add reminder"
+            end,
+            desc = function()
+                local e = entry()
+                if not e or e.weapon then return nil end
+                if InCustomList(e) then return "Custom Buffs already has a reminder for " .. e.name .. "." end
+                return string.format("Adds a reminder for %s (spell ID %d) to Custom Buffs. Every rank counts.", e.name, e.id)
+            end,
+            -- custom reminders only see the buff list, not hidden buffs or weapon enchants
+            hidden = function()
+                local e = entry()
+                return not e or e.weapon or e.hidden
+            end,
+            disabled = function()
+                local e = entry()
+                return not e or InCustomList(e)
+            end,
+            func = function()
+                -- the row as it was drawn, not a fresh read
+                local e = buffList[i]
+                if e and not e.weapon and not e.hidden and not InCustomList(e) then
+                    FB:AddCustom(tostring(e.id))
+                    FB:Print(string.format("Added %s to Custom Buffs.", e.name))
+                end
+            end,
+        }
+        -- line break, so a wide window doesn't put two buffs on one line
+        args["break" .. i] = {
+            type = "description", order = i * 3 + 2, width = "full", name = "",
+            hidden = function() return not entry() end,
+        }
+    end
+    return args
+end
+-- fixed rows that read the list while they are drawn, so they are built once
+options.args.buffs.args = BuildBuffArgs()
+
+-- Redraw the Your Buffs tab while it is open: right after your buffs change, and every
+-- few seconds for the timers. Other tabs are never redrawn, that would get in the way
+-- of dragging a slider.
+local function BuffsTabShown()
+    local groups = AceConfigDialog:GetStatusTable("ForeverBuffed").groups
+    if not groups or groups.selected ~= "buffs" then return false end
+    if AceConfigDialog.OpenFrames.ForeverBuffed then return true end
+    return FB.optionsFrame ~= nil and FB.optionsFrame:IsVisible()
+end
+
+local refresher = CreateFrame("Frame")
+local buffsChanged, sinceRedraw = false, 0
+refresher:RegisterUnitEvent("UNIT_AURA", "player")
+refresher:RegisterUnitEvent("UNIT_INVENTORY_CHANGED", "player")
+refresher:RegisterEvent("PLAYER_REGEN_DISABLED")
+refresher:RegisterEvent("PLAYER_REGEN_ENABLED")
+refresher:SetScript("OnEvent", function() buffsChanged = true end)
+refresher:SetScript("OnUpdate", function(_, elapsed)
+    sinceRedraw = sinceRedraw + elapsed
+    if sinceRedraw < 1 or (not buffsChanged and sinceRedraw < 10) then return end
+    if BuffsTabShown() then AceConfigRegistry:NotifyChange("ForeverBuffed") end
+    buffsChanged, sinceRedraw = false, 0
+end)
 
 function FB:AddCustom(text)
     local ids, names = ns.ParseSpellList(text)
