@@ -49,7 +49,7 @@ local defaults = {
 }
 
 local trackers = {}    -- enabled trackers, in display order
-local states = {}      -- tracker key -> { present, expires, duration, lastName, instanceID }
+local states = {}      -- tracker key -> { present, expires, lastName, suggest, instanceID }
 local auraDirty = true -- buffs changed since the last successful scan
 local sentAt = {}      -- castGUID -> GetTime() of a cast you started, until it lands
 local sentSelf = {}    -- castGUID -> true if that cast is aimed at you
@@ -119,12 +119,15 @@ local function ReadWeaponEnchant(slot)
     return false, 0
 end
 
--- Off-hand counts only for weapons, not shields or held-in-off-hand items.
+-- Off-hand counts only for weapons, not shields or held-in-off-hand items. Fishing poles
+-- don't count either: no poison, stone or imbue goes on them.
 local function SlotHasWeapon(slot)
     local itemID = GetInventoryItemID("player", INV_SLOT[slot])
     if not itemID then return false end
+    local _, _, _, _, _, classID, subclassID = C_Item.GetItemInfoInstant(itemID)
+    if classID == Enum.ItemClass.Weapon and subclassID == Enum.ItemWeaponSubclass.Fishingpole then return false end
     if slot == "MainHand" then return true end
-    return select(6, C_Item.GetItemInfoInstant(itemID)) == Enum.ItemClass.Weapon
+    return classID == Enum.ItemClass.Weapon
 end
 
 -------------------------------------------------------------------------------
@@ -338,6 +341,8 @@ function FB:RefreshSpells()
         end
     end
     self:RefreshTracking()
+    -- a new rank can make someone else's buff weaker than yours, a new blessing leaves room
+    auraDirty = true
 end
 
 -- Minimap tracking (Find Herbs, Sense Undead, Track Beasts, ...) is no buff; the game
@@ -449,16 +454,18 @@ end
 -- For a tracker that counts only your own buff while none of yours is on you (scan
 -- records 1..n): the name of a buff you could still add, preferably the one you used
 -- last. Nil if the buffs of others already cover every kind you know, at least as strong
--- as yours, plus the time the first of those runs out (0 = never).
+-- as yours, plus the time the first of those runs out (0 = never) and the buff you could
+-- add then.
 local function FreeKind(t, n)
     local last = t.state.lastName
-    local free, coverEnds
+    local free, coverEnds, ending
     for _, kind in ipairs(t.kinds) do
         local known
         for _, name in ipairs(kind.list) do
             if not known and t.knownCasts[name] then known = name end
         end
         if known then
+            if last and kind.names[last] and t.knownCasts[last] then known = last end
             local cover
             for i = 1, n do
                 local rec = scan[i]
@@ -466,16 +473,17 @@ local function FreeKind(t, n)
             end
             cover = cover or FindHiddenAura(kind.ids)
             if not cover then
-                if last and kind.names[last] and t.knownCasts[last] then return last end
+                if known == last then return last end
                 free = free or known
             elseif cover.expires > 0 and (not coverEnds or coverEnds == 0 or cover.expires < coverEnds) then
                 coverEnds = cover.expires
+                ending = known
             else
                 coverEnds = coverEnds or 0
             end
         end
     end
-    return free, coverEnds or 0
+    return free, coverEnds or 0, ending
 end
 
 -- Reads all player buffs and updates every aura tracker. Only possible while
@@ -518,8 +526,11 @@ local function ScanAuras()
             local covered, coverEnds
             st.suggest = nil
             if not best and t.kinds then
-                st.suggest, coverEnds = FreeKind(t, n)
-                covered = not st.suggest
+                local free, ending
+                free, coverEnds, ending = FreeKind(t, n)
+                covered = not free
+                -- while covered: the icon shows the buff you can add once the first cover runs out
+                st.suggest = free or ending
             end
             if best then
                 if not st.present or st.lastName ~= best.name or math.abs(st.expires - best.expires) > 1 then
@@ -529,11 +540,11 @@ local function ScanAuras()
                 end
                 st.present = true
                 st.expires = best.expires
-                st.duration = best.duration
                 st.lastName = best.name
                 st.instanceID = best.instance
                 t.seenIDs[best.id] = true
-                if best.duration > 0 then durations[best.name] = best.duration end
+                -- for your casts in combat; someone else's can last longer (Booming Voice)
+                if best.mine ~= false and best.duration > 0 then durations[best.name] = best.duration end
             elseif covered then
                 -- the icon keeps showing your own buff (lastName) once a cover runs out
                 if not st.present or math.abs(st.expires - coverEnds) > 1 then
@@ -617,7 +628,7 @@ local function OnCastSucceeded(_, castGUID, spellID)
         if t.kind == "aura" and t.castNames[name] and (t.selfNames[name] or onSelf) then
             matched = true
             if started then
-                local duration = durations[name] or st.duration or t.defaultDuration
+                local duration = durations[name] or t.defaultDuration
                 st.present = true
                 st.expires = (duration and duration > 0) and (now + duration) or 0
                 st.lastName = name
@@ -1205,7 +1216,7 @@ function FB:ReadBuffs()
                     trackers = {},
                 }
                 for _, t in ipairs(trackers) do
-                    if t.kind == "weapon" and t.slot == slot and Active(t) then
+                    if t.kind == "weapon" and t.slot == slot and Active(t) and SlotHasWeapon(slot) then
                         e.trackers[#e.trackers + 1] = { tracker = t }
                     end
                 end
