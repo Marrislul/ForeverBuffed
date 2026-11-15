@@ -44,12 +44,13 @@ local defaults = {
         nextCustomID = 1,
     },
     char = {
-        durations = {}, -- lowercase buff name -> full duration seen out of combat
+        -- lowercase buff name (spell ID for replacedBy) -> full duration seen out of combat
+        durations = {},
     },
 }
 
 local trackers = {}    -- enabled trackers, in display order
-local states = {}      -- tracker key -> { present, expires, lastName, suggest, instanceID }
+local states = {}      -- tracker key -> { present, expires, lastName, suggest, instanceID, covered, replacedBy }
 local auraDirty = true -- buffs changed since the last successful scan
 local sentAt = {}      -- castGUID -> GetTime() of a cast you started, until it lands
 local sentSelf = {}    -- castGUID -> true if that cast is aimed at you
@@ -57,7 +58,8 @@ local sentCount = 0
 local scan = {}        -- reused scan records
 local icons = {}
 local shownCount = -1  -- number of shown icons the layout is for; -1 = outdated
-local container, mover, playerName
+local container, mover
+local myNames = {}     -- the forms of your name a cast target can have: "First", "First Last"
 local debugMode = false -- /fb debug: explain in chat what the addon sees
 local combatScanNoted = false
 
@@ -253,6 +255,11 @@ function FB:RebuildTrackers()
         end
         if cfg.exclusive ~= false then AddExclusive(t, ns.ExclusiveGroups(def.buffs or {})) end
         t.own = def.own
+        if def.replacedBy then
+            t.replacedBy = def.replacedBy
+            t.replacedNames = {}
+            for id in pairs(def.replacedBy) do AddName(t.replacedNames, SpellName(id)) end
+        end
         local kinds = def.kinds
         if def.own and not kinds then
             kinds = {}
@@ -486,6 +493,17 @@ local function FreeKind(t, n)
     return free, coverEnds or 0, ending
 end
 
+-- Your own buff that took the place of the tracker's (replacedBy), e.g. your Blessing of
+-- Freedom on you instead of your Might.
+local function OwnReplacement(t, n)
+    local found
+    for i = 1, n do
+        local rec = scan[i]
+        if t.replacedNames[rec.name] and rec.mine then found = Longer(found, rec) end
+    end
+    return found
+end
+
 -- Reads all player buffs and updates every aura tracker. Only possible while
 -- buff data is not secret; returns false (state untouched) otherwise.
 local function ScanAuras()
@@ -523,7 +541,7 @@ local function ScanAuras()
             end
             if not best and t.exclusive then best = FindHiddenAura(t.exclusive) end
             local st = t.state
-            local covered, coverEnds
+            local covered, coverEnds, replaced
             st.suggest = nil
             if not best and t.kinds then
                 local free, ending
@@ -532,6 +550,9 @@ local function ScanAuras()
                 -- while covered: the icon shows the buff you can add once the first cover runs out
                 st.suggest = free or ending
             end
+            if not best and not covered and t.replacedNames then replaced = OwnReplacement(t, n) end
+            st.covered = covered or nil
+            st.replacedBy = replaced and replaced.name or nil
             if best then
                 if not st.present or st.lastName ~= best.name or math.abs(st.expires - best.expires) > 1 then
                     Debug("scan: %s = %s (%d)%s, %s", t.key, best.name, best.id,
@@ -554,6 +575,17 @@ local function ScanAuras()
                 st.present = true
                 st.expires = coverEnds
                 st.instanceID = nil
+            elseif replaced then
+                -- nothing to add until it runs out; the warning counts down to it with your
+                -- buff's icon (lastName)
+                if not st.present or math.abs(st.expires - replaced.expires) > 1 then
+                    Debug("scan: %s, replaced by your %s, %ds left", t.key, replaced.name,
+                        replaced.expires - GetTime())
+                end
+                st.present = true
+                st.expires = replaced.expires
+                st.instanceID = replaced.instance -- right-clicking it away leaves you without
+                if replaced.duration > 0 then durations[replaced.id] = replaced.duration end
             elseif hidden == 0 or TrackerReadable(t) then
                 if st.present then
                     Debug("scan: %s not found (%d hidden buffs, %s)%s", t.key, hidden,
@@ -587,9 +619,19 @@ local function OnCastSent(_, target, castGUID, spellID)
         end
     end
     sentAt[castGUID] = now
-    sentSelf[castGUID] = (not IsSecret(target) and (target == "" or target == playerName)) or nil
+    sentSelf[castGUID] = (not IsSecret(target) and (target == "" or myNames[target])) or nil
     sentCount = sentCount + 1
-    if debugMode and not IsSecret(spellID) then Debug("sent: %s", SpellName(spellID) or spellID) end
+    if debugMode and not IsSecret(spellID) then
+        local on = ""
+        if sentSelf[castGUID] then
+            on = " on you"
+        elseif IsSecret(target) then
+            on = " on a hidden target"
+        elseif type(target) == "string" and target ~= "" then
+            on = " on " .. target
+        end
+        Debug("sent: %s%s", SpellName(spellID) or spellID, on)
+    end
 end
 
 -- The player's own casts stay readable in combat. A buff cast on yourself
@@ -633,10 +675,26 @@ local function OnCastSucceeded(_, castGUID, spellID)
                 st.expires = (duration and duration > 0) and (now + duration) or 0
                 st.lastName = name
                 st.suggest = nil
+                st.replacedBy = nil
                 st.instanceID = nil -- the new instance ID can't be read in combat
                 Debug("cast: %s -> %s, %ds", name, t.key, duration or 0)
             else
                 Debug("cast: %s, triggered by the game, ignored", name)
+            end
+        elseif t.kind == "aura" and t.replacedNames and t.replacedNames[name] and onSelf then
+            -- e.g. your Freedom on yourself replaces your blessing, not those of others
+            matched = true
+            if not started then
+                Debug("cast: %s, triggered by the game, ignored", name)
+            elseif st.covered and st.present then
+                Debug("cast: %s, the buffs of others still cover %s", name, t.key)
+            else
+                local duration = durations[spellID] or t.replacedBy[spellID] or 10
+                st.present = true
+                st.expires = now + duration
+                st.replacedBy = name
+                st.instanceID = nil
+                Debug("cast: %s, replaces %s for %ds", name, t.key, duration)
             end
         end
     end
@@ -669,11 +727,14 @@ end
 
 -- "/cancelaura Battle Shout", "Battle Shout(Rank 3)" or a spell ID: always readable.
 -- With t.own only your own buff (lastName) matters, not someone else's of the same family.
+-- Cancelling the buff that replaced yours (/cancelaura Blessing of Protection) leaves you without.
 local function OnCancelName(name)
     if IsSecret(name) or type(name) ~= "string" then return end
     name = strlower((name:gsub("%s*%(.-%)%s*$", "")))
     for _, t in ipairs(trackers) do
-        if t.kind == "aura" and t.buffNames[name] and (not t.own or t.state.lastName == name) then
+        local st = t.state
+        if t.kind == "aura" and (st.replacedBy == name
+            or (t.buffNames[name] and (not t.own or st.lastName == name))) then
             MarkCancelled(t)
         end
     end
@@ -1309,7 +1370,14 @@ function FB:OnInitialize()
 end
 
 function FB:OnEnable()
-    playerName = UnitName("player")
+    -- Forever characters have a surname. UnitName returns it separately, but the cast
+    -- target is the full name, e.g. "Test Name".
+    local name, surname = UnitName("player")
+    myNames[name] = true
+    if surname and surname ~= "" then
+        local sep = Constants and Constants.CharacterNameSeparatorConsts
+        myNames[name .. (sep and sep.CHARACTERNAME_SURNAME_SEPARATOR or " ") .. surname] = true
+    end
 
     for _, event in ipairs({
         "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",

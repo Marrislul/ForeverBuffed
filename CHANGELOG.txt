@@ -1,7 +1,6 @@
-0.0.6
+0.0.7
 
 FIXES
-- Your own buffs cast in combat no longer take their duration from someone else's. Another warrior's Battle Shout with Booming Voice lasts longer, and after seeing it the addon expected yours to last that long too, so the reminder came too late.
-- A fishing pole no longer counts as a weapon: no poison, imbue or weapon buff reminder while you fish.
-- Learning a new rank checks the buffs of others right away. A Fortitude rank 4 from someone else stops counting as soon as you learn rank 5, not only once your buffs change.
-- While blessings of other paladins cover yours, the warning before one of them runs out shows that blessing, not the one you used last.
+- Buffs you cast on yourself in combat count again, e.g. Blessing of Might, Arcane Intellect or Power Word: Fortitude. Because of the surnames on Forever, the addon thought they went to someone else. Only the group versions and self-only buffs like Battle Shout worked.
+- Paladins: Blessing of Freedom or Protection on yourself replaces your own blessing. The blessing reminder now counts down until it runs out, so you know when to rebuff, also in combat. Before, it showed your blessing as missing right away out of combat, and in combat not until the end of the fight.
+- Cancelling your Blessing of Protection early (right-click or /cancelaura) shows the blessing reminder right away.

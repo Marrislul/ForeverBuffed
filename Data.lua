@@ -25,6 +25,9 @@ local _, ns = ...
 --               byID e.g. camp buffs); default: every buff name is a kind of its own.
 --               The buffs of others count once they cover every kind you know at least
 --               as strong as yours (ns.RANKS), and the icon shows a kind you can still add
+--   replacedBy  with own: your buffs that take the place of yours on you, spell ID ->
+--               seconds (per rank, used until the real duration has been seen). While
+--               one is on you there is nothing to add; once it runs out, yours is gone
 --   desc        tooltip in the options
 --   default     enabled in a new profile
 
@@ -70,6 +73,10 @@ ns.CLASS_TRACKERS = {
                 { byName = { 19742, 25894 }, byID = { 1230587 } }, -- Wisdom, camp: Boosted Mana Regeneration
                 { byName = { 20217, 25898 }, byID = { 1230098 } }, -- Kings, camp: Boosted Stats
             },
+            -- Freedom and Protection are blessings too (one blessing per paladin): cast on
+            -- yourself, they replace your blessing. Freedom lasts 10 s, 13 s with Guardian's
+            -- Favor; better late than a reminder that makes you overwrite it.
+            replacedBy = { [1044] = 13, [1022] = 6, [5599] = 8, [10278] = 10 },
             desc = "Your own blessing on you. Blessings of other paladins stack with yours, so they "
                 .. "only count once they cover every blessing you know, each at least as strong as yours.",
             default = true,
