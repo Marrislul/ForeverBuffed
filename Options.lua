@@ -64,6 +64,19 @@ end
 local GLOW_VALUES = { off = "Off", missing = "When missing", both = "When missing or running out" }
 local GLOW_SORTING = { "off", "missing", "both" }
 
+-- Sound kit IDs. 37666 (raid boss emote) would fit too, but plays nothing on Forever.
+local SOUND_VALUES = {
+    [0] = "None",
+    [8959] = "Raid Warning",
+    [8960] = "Ready Check",
+    [12889] = "Alarm Clock",
+    [3081] = "Whisper",
+    [6674] = "Night Elf Bell",
+    [8174] = "PvP Flag Taken",
+    [ns.OWN_SOUND] = "Your own sound ID",
+}
+local SOUND_SORTING = { 0, 8959, 8960, 12889, 3081, 6674, 8174, ns.OWN_SOUND }
+
 -- Per-reminder glow; nil in the saved settings means "use the general setting".
 local function GlowSelect(order, get, set)
     local values = { default = "General setting" }
@@ -185,6 +198,41 @@ local options = {
                     desc = "What to do while the spell is not castable, e.g. no rage for Battle Shout or no mana.",
                     values = { show = "Show normally", desaturate = "Show greyed out", hide = "Hide" },
                     sorting = { "show", "desaturate", "hide" },
+                },
+                soundHeader = { type = "header", name = "Sound", order = 25 },
+                sound = {
+                    type = "select", name = "Sound when a buff drops", order = 26,
+                    desc = "Plays when one of your buffs runs out or is gone. Not when the icons just show up again, e.g. after logging in or dying.",
+                    values = SOUND_VALUES,
+                    sorting = SOUND_SORTING,
+                    get = function() return P().sound end,
+                    set = function(_, v)
+                        P().sound = v
+                        FB:PlayDropSound()
+                    end,
+                },
+                soundID = {
+                    type = "input", name = "Sound ID", order = 27,
+                    desc = "A sound kit ID, e.g. from wowhead.com/sound=8959, or a sound file ID.",
+                    hidden = function() return P().sound ~= ns.OWN_SOUND end,
+                    validate = function(_, v)
+                        v = strtrim(v)
+                        if v == "" or v:match("^%d+$") then return true end
+                        return "Please enter a number, e.g. 8959."
+                    end,
+                    get = function() return P().soundID and tostring(P().soundID) or "" end,
+                    set = function(_, v)
+                        local id = tonumber(strtrim(v))
+                        P().soundID = id
+                        if id and not FB:PlayDropSound() then
+                            FB:Print(string.format("Sound ID %d plays nothing. Maybe WoW Forever doesn't have it.", id))
+                        end
+                    end,
+                },
+                soundTest = {
+                    type = "execute", name = "Play", order = 28, width = "half",
+                    hidden = function() return P().sound == 0 end,
+                    func = function() FB:PlayDropSound() end,
                 },
                 visibilityHeader = { type = "header", name = "Visibility", order = 30 },
                 showWhen = {

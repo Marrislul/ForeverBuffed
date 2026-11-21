@@ -21,6 +21,8 @@ local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local INV_SLOT = { MainHand = 16, OffHand = 17 }
 local UPDATE_INTERVAL = 0.1
 local RED_TEXT_BELOW = 5
+local SOUND_GAP = 2 -- seconds; buffs dropping together give one sound
+ns.OWN_SOUND = -1   -- profile.sound value for the player's own ID in profile.soundID
 
 local defaults = {
     profile = {
@@ -39,6 +41,7 @@ local defaults = {
         showWhen = "always",
         hideResting = false,
         hideMounted = false,
+        sound = 0, -- when a buff drops: 0 = none, ns.OWN_SOUND, otherwise a sound kit ID
         trackers = { ["*"] = { threshold = 0 } },
         custom = {},
         nextCustomID = 1,
@@ -62,6 +65,7 @@ local container, mover
 local myNames = {}     -- the forms of your name a cast target can have: "First", "First Last"
 local debugMode = false -- /fb debug: explain in chat what the addon sees
 local combatScanNoted = false
+local lastSoundAt = -SOUND_GAP
 
 local function Debug(text, ...)
     if debugMode then FB:Print("|cff999999debug:|r " .. format(text, ...)) end
@@ -964,13 +968,14 @@ local function GloballyHidden(p, inCombat)
     return false
 end
 
--- Status of one tracker: nil (all good), "missing" or "expiring" (+ seconds left).
+-- Status of one tracker: nil (all good), "missing" or "expiring" (+ seconds left),
+-- false if it doesn't apply right now (spell not learned, no weapon in the slot).
 local function Evaluate(t, now, p)
-    if t.needsSpell and not t.castSpell then return nil end
+    if t.needsSpell and not t.castSpell then return false end
     local st = t.state
 
     if t.kind == "weapon" then
-        if not SlotHasWeapon(t.slot) then return nil end
+        if not SlotHasWeapon(t.slot) then return false end
         local has, left = ReadWeaponEnchant(t.slot)
         st.present = has
         st.expires = (has and left > 0) and (now + left) or 0
@@ -1010,6 +1015,7 @@ function FB:Update()
     if not p.locked then
         -- preview while placing the bar
         for i, t in ipairs(trackers) do
+            t.heard = nil
             if not (t.needsSpell and not t.castSpell) then
                 n = n + 1
                 if i % 2 == 1 then
@@ -1020,28 +1026,60 @@ function FB:Update()
             end
         end
     else
+        -- t.heard is the last status while the reminder could be seen ("ok", "expiring",
+        -- "missing"), nil while hidden. The drop sound needs a known status before, so it
+        -- doesn't play when icons only show up again (login, dying, dismounting, ...).
         local inCombat = InCombatLockdown()
-        if not GloballyHidden(p, inCombat) then
-            local now = GetTime()
-            for _, t in ipairs(trackers) do
-                local status, remaining
-                if inCombat or not t.combatOnly then
-                    status, remaining = Evaluate(t, now, p)
-                end
-                if status then
-                    local _, spell = TrackerIcon(t)
-                    if p.unusable ~= "hide" or IsCastable(t, spell) then
-                        n = n + 1
-                        ShowIcon(n, t, status, remaining, p)
-                    end
-                end
+        local hidden = GloballyHidden(p, inCombat)
+        local now = GetTime()
+        local dropped = false
+        for _, t in ipairs(trackers) do
+            local evaluated = not hidden and (inCombat or not t.combatOnly)
+            local status, remaining
+            if evaluated then
+                status, remaining = Evaluate(t, now, p)
             end
+            if status then
+                local _, spell = TrackerIcon(t)
+                if p.unusable ~= "hide" or IsCastable(t, spell) then
+                    n = n + 1
+                    ShowIcon(n, t, status, remaining, p)
+                    if status == "missing" and t.heard and t.heard ~= "missing" then dropped = true end
+                    t.heard = status
+                end
+                -- hidden while it can't be cast: t.heard stays, so the sound comes with the icon
+            elseif evaluated and status == nil then
+                t.heard = "ok"
+            else
+                t.heard = nil
+            end
+        end
+        if dropped and now - lastSoundAt >= SOUND_GAP then
+            lastSoundAt = now
+            self:PlayDropSound()
         end
     end
     if n ~= shownCount then LayoutIcons(n, p) end
     for i = n + 1, #icons do
         icons[i]:Hide()
     end
+end
+
+-- Tries the ID as a sound kit, then as a sound file. The Master channel doesn't depend
+-- on the sound effects volume. Returns whether something played.
+function FB:PlaySoundID(id)
+    if not id or id <= 0 then return false end
+    local ok, played = pcall(PlaySound, id, "Master")
+    if ok and played then return true end
+    ok, played = pcall(PlaySoundFile, id, "Master")
+    return ok and played and true or false
+end
+
+function FB:PlayDropSound()
+    local p = self.db.profile
+    local id = p.sound
+    if id == ns.OWN_SOUND then id = p.soundID end
+    return self:PlaySoundID(id)
 end
 
 function FB:ApplyLayout()
