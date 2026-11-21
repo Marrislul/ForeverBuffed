@@ -43,4 +43,6 @@ What it can't see: buffs somebody else puts on you during a fight, buffs that ge
 
 You can change the icon size and direction (or keep the bar centered), type in the exact position, set the warning time (for everything or per buff), show reminders only in or out of combat, hide them while resting or mounted, and pick what happens when you're out of mana or rage: show the icon, grey it out, or hide it. Each reminder can glow when it's missing, or already while it's running out.
 
+If you want, it also plays a sound when a buff drops. Pick one of a few game sounds or enter your own sound ID.
+
 Found a bug, or a spell that's missing? Leave a comment. Forever changed a lot of spells and I don't play every class.
